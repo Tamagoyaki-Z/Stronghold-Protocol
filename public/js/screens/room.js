@@ -116,6 +116,28 @@ export function roomShowsGroups(room, facts) {
 }
 
 /**
+ * 切换到观战 (0.2.4, the owner's request): may THIS doctor give its seat up and watch instead? The server is the gate
+ * (server/lobby.js `seatToSpectate`) — this only decides the button's state and its hint, mirroring the server's rules
+ * one for one: a seated human of a co-op room, a free spectator seat (MAX_SPECTATORS) and at least one other doctor to
+ * keep the room. `reason` is a msgid the caller translates ('' when there is nothing to say).
+ * @param {any} room room.state payload @param {string} myId
+ * @returns {{ can: boolean, reason: string }} the reason (msgid) is non-empty only when `can` is false
+ */
+export function spectateSwitchGate(room, myId) {
+  const facts = roomFacts(room, myId);
+  const mine = facts.mine;
+  if (!mine || mine.isBot || mine.left) return { can: false, reason: '' };      // no seat of one's own: nothing to give up
+  // the owner's hard rule (2026-10-12): the switch is a waiting-room action only — the server refuses it in a match
+  if (room?.inMatch) return { can: false, reason: '开局后无法切换观战' };
+  if (room?.mode === 'solo') return { can: false, reason: '单人局没有观战席' };
+  if (facts.spectators.length >= MAX_SPECTATORS) return { can: false, reason: '观战席已满' };
+  if (facts.humans.filter((s) => s.playerId !== myId).length === 0) {
+    return { can: false, reason: '你是同盟里唯一的博士，切换观战会让同盟解散' };
+  }
+  return { can: true, reason: '' };
+}
+
+/**
  * The fixed draft group sizes of a room: the server's `room.state.groups` when it sent one, else computed from the
  * occupied seat count with the shared rule (a state from an older server). A room of five or fewer has one shared
  * pool: the server omits `groups` there and this returns [] — never a single "A 组" label for a whole room.
@@ -608,6 +630,21 @@ export function RoomScreen() {
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
+  // 切换到观战: the same room.spectate entry an outsider uses — a seated doctor rides the seat→spectator branch of it.
+  // Nothing is guessed locally: the seats and the spectator strip only ever come from the next room.state frame.
+  const toSpectate = async () => {
+    if (!spectateGate.can || inFlight.current) return;
+    inFlight.current = true;
+    setBusy('spectate');
+    try {
+      await net.request('room.spectate', { code: room.code });
+    } catch (err) {
+      toastError(err);
+    } finally {
+      inFlight.current = false;
+      if (alive.current) setBusy(null);
+    }
+  };
   // ⇄ 换位: ask another doctor for its seat. The target decides; the seats move when the server says so.
   const askSwap = (seat, name, playerId) => run(`swap${seat}`, async () => {
     const yes = await confirmDialog({ title: t('换位请求'),
@@ -638,6 +675,7 @@ export function RoomScreen() {
     }
   };
 
+  const spectateGate = spectateSwitchGate(room, me.playerId);
   const statusLine = !online
     ? html`<span class="t-orange"><${Icon} name="wifiOff" />${t('连接中断，正在重连…')}</span>`
     : facts.spectating
@@ -659,6 +697,11 @@ export function RoomScreen() {
         <${Tooltip} text=${t('离开同盟')} placement="bottom">
           <${Button} variant="danger" size="lg" square=${true} icon="exit" loading=${busy === 'leave'} onClick=${leave} aria-label=${t('离开同盟')} />
         <//>
+        ${facts.mine ? html`<span class="room-spectate" data-spectate=${spectateGate.can ? 'on' : 'off'} data-reason=${spectateGate.reason}
+            title=${spectateGate.can ? t('放弃席位，改为观看本局（房间密钥不变）') : t(spectateGate.reason)}>
+          <${Button} variant="secondary" size="sm" icon="eye" loading=${busy === 'spectate'} disabled=${!spectateGate.can || !online}
+            onClick=${toSpectate} aria-label=${t('切换到观战')}>${t('切换到观战')}<//>
+        </span>` : null}
         <div class="room-ping">
           <${PingPill} ms=${conn.ping} raw=${conn.pingRaw} online=${online} />
           <${MicroLabel}>${t('当前延迟')}<//>

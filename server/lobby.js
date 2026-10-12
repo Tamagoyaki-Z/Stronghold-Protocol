@@ -89,6 +89,9 @@
 //   * Spectator seats (community report #26, owner's decision 2026-10-04 — a remake feature, the official room has none):
 //     room.spectate { code } takes one of a co-op room's MAX_SPECTATORS (2) spectator seats, in its lobby or while its
 //     match runs (▸ solo rooms: ROOM_FULL). A spectator is not a player: never in `seats`, never counted for the 1–20 players
+//     A SEATED doctor of that room may take a spectator seat in place (0.2.4 「切换到观战」) — but only while the
+//     room is still waiting: once its match runs the switch is refused (ROOM_STARTED) and nothing moves. An
+//     OUTSIDER may still watch a running match, exactly as before.
 //     or the start gate, never host, never keeps a room alive (a room whose last human leaves closes with room.closed
 //     {empty} for its spectators). It receives room.state (`spectators: [{ playerId, name, connected }]`) and every match
 //     broadcast (m.public, m.ticker, m.emote, b.pool — public data); the match registers it (opts.spectators /
@@ -609,7 +612,9 @@ export class Lobby {
     if (!room) return fail(ERR.ROOM_NOT_FOUND);
     const cur = this.roomOf(session);
     if (cur === room) {
-      if (!room.spectatorOf(session.playerId)) return fail(ERR.ALREADY, 'seated as a player');
+      // 切换到观战 (0.2.4, the owner's request): a doctor who already HOLDS a seat of this room gives the seat up and
+      // watches instead — no leave + re-join, the room code stays. The client's button is only a hint; this is the gate.
+      if (!room.spectatorOf(session.playerId)) return this.seatToSpectate(session, room);
       this.discovery.forget(session.playerId);
       this.sendState(room, session);
       return OK;
@@ -631,6 +636,40 @@ export class Lobby {
       this.callMatch(room, 'addSpectator', session.playerId);
       this.sendChatState(room, session.playerId);
     }
+    return OK;
+  }
+
+  /**
+   * 切换到观战 (0.2.4): a SEATED doctor of `room` gives the seat up and takes a spectator seat of the SAME room.
+   *
+   * The owner's rule (2026-10-12) is a hard server gate, never just a greyed-out button: **once the simulation has
+   * started, a seated player may NOT switch** (room.match ⇒ ROOM_STARTED, and not one byte of state moves). An
+   * OUTSIDER may still take a spectator seat during a running match — that is the other branch of `spectate` and is
+   * deliberately untouched (the rule is about a seated player walking out mid-match, nothing else).
+   *
+   * The seat is freed through `removeMember`, so every existing rule does the rest: the host migrates to the
+   * lowest-seat human (`migrateHost`, which also promotes it to P1 while the room is still waiting), a pending ⇄ 换位
+   * ask of that doctor is dropped, its loadout/skins stay on its session (a spectator never hands anything to the
+   * match), and the other seats and ready flags are not touched. A room whose LAST human would leave is refused: a
+   * spectator has never kept a room alive (header), so `removeMember` would dispose the room and kick the very doctor
+   * who asked to watch.
+   * @param {Session} session @param {Room} room
+   */
+  seatToSpectate(session, room) {
+    if (room.match) return fail(ERR.ROOM_STARTED, 'in match: a seated player cannot switch to a spectator seat');
+    if (this.emergency.active) return fail(ERR.SERVER_EMERGENCY);
+    const seat = room.seatOf(session.playerId);
+    if (!seat || seat.isBot || seat.left) return fail(ERR.BAD_TARGET, 'not a seated player');
+    if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room: no spectator seat');
+    if (room.spectators.length >= MAX_SPECTATORS) return fail(ERR.ROOM_FULL, 'no free spectator seat');
+    if (!room.activeHumans().some((s) => s.playerId !== session.playerId)) return fail(ERR.ROOM_FULL, 'the room would keep no player');
+    this.removeMember(room, session.playerId);
+    if (room.disposed) return fail(ERR.INTERNAL, 'the room disappeared');
+    room.spectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
+    session.roomCode = room.code;
+    this.discovery.forget(session.playerId);
+    this.log.info(`[lobby] ${room.code} ${session.name} gave its seat up to watch`);
+    this.broadcastState(room);
     return OK;
   }
 

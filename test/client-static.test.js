@@ -1213,6 +1213,28 @@ describe('screen helpers', () => {
     assert.equal(stageLabel('nope'), '');
   });
 
+  test('切换到观战: the button follows the server gate (running match / solo / full seats / last doctor)', async () => {
+    const { spectateSwitchGate } = await mod('screens/room.js');
+    const seat = (pid, extra = {}) => ({ seat: 0, playerId: pid, name: pid, isBot: false, ready: false, connected: true, ...extra });
+    const room = (over = {}) => ({ code: 'ABCD', hostId: 'me', mode: 'coop', difficulty: 'NORMAL', inMatch: false,
+      seats: [seat('me'), seat('you', { seat: 1 })], spectators: [], ...over });
+    assert.deepEqual(spectateSwitchGate(room(), 'me'), { can: true, reason: '' }, 'a waiting co-op room with a free seat');
+    assert.equal(spectateSwitchGate(room({ inMatch: true }), 'me').reason, '开局后无法切换观战', 'the owner\'s hard rule');
+    assert.equal(spectateSwitchGate(room({ mode: 'solo' }), 'me').reason, '单人局没有观战席');
+    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }, { playerId: 'b' }] }), 'me').reason, '观战席已满');
+    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }] }), 'me').can, true, 'one free seat is enough');
+    const alone = spectateSwitchGate(room({ seats: [seat('me')] }), 'me');
+    assert.equal(alone.can, false, 'the last doctor would disband the room');
+    assert.match(alone.reason, /唯一的博士/);
+    assert.equal(spectateSwitchGate(room({ seats: [null, seat('you', { seat: 1 })], spectators: [{ playerId: 'me' }] }), 'me').can, false, 'a spectator has no seat to give up');
+    assert.equal(spectateSwitchGate(room({ seats: [seat('you')] }), 'me').can, false, 'nor has an outsider');
+    // the card really consumes it (not a gate that nothing reads)
+    const src = readFileSync(path.join(PUBLIC, 'js/screens/room.js'), 'utf8');
+    assert.match(src, /disabled=\$\{!spectateGate\.can \|\| !online\}/, 'the button is disabled by the gate');
+    assert.match(src, /data-spectate=\$\{spectateGate\.can \? 'on' : 'off'\}/);
+    assert.match(src, /t\(spectateGate\.reason\)/, 'and its tooltip falls back to the gate\'s reason');
+  });
+
   test('room: normalizeSeats / roomFacts / inviteLink', async () => {
     const { normalizeSeats, roomFacts, inviteLink } = await mod('screens/room.js');
     const room = {
