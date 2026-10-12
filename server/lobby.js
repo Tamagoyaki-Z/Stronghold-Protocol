@@ -121,6 +121,7 @@ export const LOBBY_DEFAULTS = Object.freeze({
   maxMatchesPerAddr: 8,   // matches started from one client network that may run at once (0 = unlimited)
   resyncMinGapMs: 1000,   // heavy resyncs (match state / result replay) per session at most this often on repeated hellos
   soloReconnectWindowMs: null, // a dropped solo run stays resumable this long (null = data singleReconnectTime, 24 h)
+  swapTtlMs: 30_000,      // ⇄ 换位: how long room.swapAsk waits for the target's answer (a timeout is a refusal)
 });
 
 /** Official `singleReconnectTime` (s) when the data lacks it (constData, research 01 §1). */
@@ -210,6 +211,12 @@ export class Room {
     this.seats = new Array(this.capacity).fill(null);
     /** @type {{ playerId: string, name: string, connected: boolean }[]} spectator seats, ≤ MAX_SPECTATORS (header) */
     this.spectators = [];
+    /**
+     * ⇄ 换位 (room.swapAsk): the negotiations in flight, keyed by the asker's playerId (one per player). `toState`
+     * publishes them as `{ from, to, ttlMs }`, so both sides and every bystander render the same waiting state.
+     * @type {Map<string, { from: string, to: string, expiresAt: number, timer: any }>}
+     */
+    this.swaps = new Map();
     /** @type {any} running Match instance */
     this.match = null;
     /** @type {{ live: boolean, ended: boolean, disposed: boolean, match: any, chat: MatchChat } | null} */
@@ -245,8 +252,12 @@ export class Room {
   /** Humans that have not departed, in seat order. @returns {Seat[]} */
   activeHumans() { return this.seats.filter((s) => s && !s.isBot && !s.left); }
 
-  /** `room.state` frame (DESIGN §8.1) plus `inMatch`. */
-  toState() {
+  /**
+   * `room.state` frame (DESIGN §8.1) plus `inMatch` and the ⇄ 换位 negotiations in flight.
+   * @param {number} [nowMs] the clock the lobby reads, so `swaps[].ttlMs` is the real remainder of an answer window
+   *   instead of a number this class would have to guess from a timestamp taken when it was built
+   */
+  toState(nowMs = Date.now()) {
     return {
       t: 'room.state',
       code: this.code,
@@ -265,6 +276,9 @@ export class Room {
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left }
         : null)),
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
+      // ⇄ 换位: who negotiates with whom, and how long the target still has to answer. The only place a client learns
+      // about a swap (`room.swapAsked` merely opens the target's dialog); seats move in the frame that follows consent.
+      swaps: [...this.swaps.values()].map((s) => ({ from: s.from, to: s.to, ttlMs: Math.max(0, s.expiresAt - nowMs) })),
     };
   }
 }
@@ -290,6 +304,9 @@ export class Lobby {
     this.now = now;
     this.seedFn = seedFn || (() => randomInt(2 ** 32));
     this.opts = { ...LOBBY_DEFAULTS, ...options };
+    /** ⇄ 换位 answer window (room.swapAsk): a non-negative integer of ms, else the default. */
+    this.swapTtlMs = Number.isInteger(this.opts.swapTtlMs) && this.opts.swapTtlMs >= 0
+      ? this.opts.swapTtlMs : LOBBY_DEFAULTS.swapTtlMs;
     /** @type {number | null} Owner-controlled AI ceiling, independent from the distributed bundle defaults. */
     this.maxAiPerRoom = null;
     this.requireAssetCache = false;
@@ -442,6 +459,9 @@ export class Lobby {
       case 'room.addBot': return this.addBot(session);
       case 'room.removeBot': return this.removeBot(session, msg);
       case 'room.kick': return this.kick(session, msg);
+      case 'room.swapAsk': return this.swapAsk(session, msg);
+      case 'room.swapAnswer': return this.swapAnswer(session, msg);
+      case 'room.swapCancel': return this.swapCancel(session);
       case 'room.transferHost': return this.transferHost(session, msg);
       case 'room.start': return this.start(session);
       case 'room.rerollSetup': return this.rerollSetup(session, msg);
@@ -471,6 +491,8 @@ export class Lobby {
     const player = room.seatOf(session.playerId);
     const seat = player || room.spectatorOf(session.playerId);
     seat.connected = false;
+    // ⇄ 换位: a dropped connection voids the negotiations it took part in (an answer needs both sides present)
+    this.dropSwapsFor(room, session.playerId);
     // a spectator's seat is kept like a player's (nothing to tell the match: it plays no field)
     if (room.match) { if (player) this.callMatch(room, 'onDisconnect', session.playerId); } else this.startGrace(room, seat);
     this.broadcastState(room);
@@ -777,6 +799,178 @@ export class Lobby {
     return OK;
   }
 
+  // ---------------------------------------------------------------------------------------------------
+  // ⇄ 换位 (LoL-style champion swap)
+  //
+  // User request 2026-10-12: the OLD shape of this feature (the host moves anybody at once) is NOT what we ship. A
+  // swap is a negotiation between two humans and nothing else: any human may ask any other human (never itself, never
+  // an AI, never a spectator), the asked player confirms, and an ask that nobody answers inside `swapTtlMs` counts as
+  // a refusal. Seat exchange itself reuses room.moveSeat's semantics (header): the seat RECORDS travel with their
+  // index, so a moved human keeps its playerId, loadout, ownership and DIY picks, while the room's fixed draft groups
+  // follow the occupied seat order (shared/playerCapacity.js) and therefore change with the swap.
+  //
+  // 准备后不再换位 (user rule, 2026-10-12): a seat that already readied for its draft group is never moved — the asker
+  // and the target must BOTH be unready when the ask is made AND when it is answered. Every other regroup in this
+  // lobby (setDifficulty) un-readies the others for exactly that reason, and the swap does the same.
+  // ---------------------------------------------------------------------------------------------------
+
+  /** The negotiation a player takes part in — as its author (`from`) or its target (`to`) — or null. */
+  swapOf(room, playerId) {
+    for (const swap of room.swaps.values()) if (swap.from === playerId || swap.to === playerId) return swap;
+    return null;
+  }
+
+  /** Forget one negotiation: stop its TTL timer. Nothing is sent here — the callers tell the two sides. */
+  dropSwap(room, swap) {
+    if (!swap) return;
+    if (swap.timer) { clearTimeout(swap.timer); swap.timer = null; }
+    if (room.swaps.get(swap.from) === swap) room.swaps.delete(swap.from);
+  }
+
+  /** `room.swapEnded` to both sides, so the target's dialog closes on the asker's decision as well as on its own. */
+  notifySwapEnded(room, swap, reason) {
+    this.sendToPlayer(room, swap.from, { t: 'room.swapEnded', with: swap.to, reason });
+    this.sendToPlayer(room, swap.to, { t: 'room.swapEnded', with: swap.from, reason });
+  }
+
+  /** Void every negotiation a player takes part in — leaving, disconnecting and being kicked all mean the same. */
+  dropSwapsFor(room, playerId) {
+    for (const swap of [...room.swaps.values()]) {
+      if (swap.from !== playerId && swap.to !== playerId) continue;
+      this.dropSwap(room, swap);
+      this.notifySwapEnded(room, swap, 'voided');
+    }
+  }
+
+  /** Void every negotiation of a room at once (the match started, the room is going away). */
+  clearSwaps(room, reason) {
+    for (const swap of [...room.swaps.values()]) {
+      this.dropSwap(room, swap);
+      this.notifySwapEnded(room, swap, reason);
+    }
+  }
+
+  /**
+   * A seat a swap may move right now: a seated, connected, UNREADY human whose session still lives in this room.
+   * @returns {Seat | null} the seat, or null when the player is a bot, a spectator, gone, offline or already readied
+   */
+  swappableSeat(room, playerId) {
+    const seat = room.seatOf(playerId);
+    if (!seat || seat.isBot || seat.left || !seat.connected || seat.ready) return null;
+    const session = this.registry.byId(playerId);
+    if (!session || !session.connected || session.roomCode !== room.code) return null;
+    return seat;
+  }
+
+  /**
+   * ⇄ 换位 (header): any human asks another human to exchange seats before the match. The asker needs an unready seat
+   * of its own, the target an unready seat and one live negotiation per player (a second ask, or one pointed at
+   * somebody already negotiating, is refused).
+   */
+  swapAsk(session, { to }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (room.mode === 'solo') return fail(ERR.BAD_TARGET, 'a solo room has one seat');
+    if (to === session.playerId) return fail(ERR.BAD_TARGET, 'a doctor cannot swap seats with itself');
+    const mine = room.seatOf(session.playerId);
+    if (!mine || mine.isBot || mine.left) return fail(ERR.SPECTATOR);
+    // 准备后不再换位: whoever readied for a draft group stays where that group put them
+    if (mine.ready) return fail(ERR.NOT_READY, 'a doctor who is ready cannot swap seats');
+    const target = room.seatOf(to);
+    if (!target || target.isBot || target.left) return fail(ERR.BAD_TARGET, 'the target must be another human in this room');
+    if (target.ready) return fail(ERR.NOT_READY, 'the target is ready and cannot swap seats');
+    const targetSession = this.registry.byId(to);
+    if (!targetSession || !targetSession.connected || targetSession.roomCode !== room.code) {
+      return fail(ERR.BAD_TARGET, 'the target must be connected');
+    }
+    if (room.swaps.has(session.playerId)) return fail(ERR.ALREADY, 'this doctor already has an outgoing swap request');
+    if (this.swapOf(room, to)) return fail(ERR.BAD_TARGET, 'the target is already negotiating a swap');
+    const swap = { from: session.playerId, to, expiresAt: this.now() + this.swapTtlMs, timer: null };
+    swap.timer = setTimeout(() => this.expireSwap(room, swap), this.swapTtlMs);
+    swap.timer.unref?.();
+    room.swaps.set(session.playerId, swap);
+    this.sendToPlayer(room, to, { t: 'room.swapAsked', from: session.playerId, fromName: mine.name, ttlMs: this.swapTtlMs });
+    this.log.info(`[lobby] ${room.code} ${mine.name} asks ${target.name} to swap seats`);
+    this.broadcastState(room);
+    return OK;
+  }
+
+  /** The ask's window ran out: a timeout IS a refusal — nothing moves and both sides are told. */
+  expireSwap(room, swap) {
+    if (room.disposed || room.swaps.get(swap.from) !== swap) return;
+    this.dropSwap(room, swap);
+    this.notifySwapEnded(room, swap, 'timeout');
+    this.log.info(`[lobby] ${room.code} seat swap ${swap.from} -> ${swap.to} timed out`);
+    this.broadcastState(room);
+  }
+
+  /**
+   * The target's decision (header: room.swapAnswer). Consent alone is never enough: both seats are re-checked against
+   * the CURRENT room — still seated, still connected, still before the match, still unready — and an ask that no longer
+   * applies is voided instead of moving anybody. That is also what makes 准备后不再换位 hold when the target readies
+   * while the dialog is open.
+   */
+  swapAnswer(session, { from, accept }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    const swap = room.swaps.get(from) || null;
+    if (!swap || swap.to !== session.playerId) return fail(ERR.BAD_TARGET, 'no pending swap request from that doctor');
+    const a = this.swappableSeat(room, swap.from);
+    const b = this.swappableSeat(room, swap.to);
+    const readied = !!(room.seatOf(swap.from)?.ready || room.seatOf(swap.to)?.ready);
+    this.dropSwap(room, swap);
+    if (!accept) {
+      this.notifySwapEnded(room, swap, 'declined');
+      this.broadcastState(room);
+      return OK;
+    }
+    if (room.match) {
+      this.notifySwapEnded(room, swap, 'voided');
+      this.broadcastState(room);
+      return fail(ERR.ROOM_STARTED, 'the match started while the swap was pending');
+    }
+    if (!a || !b) {
+      this.notifySwapEnded(room, swap, 'voided');
+      this.broadcastState(room);
+      return fail(readied ? ERR.NOT_READY : ERR.BAD_TARGET, 'the swap no longer applies');
+    }
+    this.exchangeSeats(room, a, b);
+    this.notifySwapEnded(room, swap, 'accepted');
+    this.log.info(`[lobby] ${room.code} ${a.name} <-> ${b.name} swapped seats`);
+    this.broadcastState(room);
+    return OK;
+  }
+
+  /** The asker withdraws its own ask; the target's dialog closes on the same frame. */
+  swapCancel(session) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    const swap = room.swaps.get(session.playerId) || null;
+    if (!swap) return fail(ERR.BAD_TARGET, 'no outgoing swap request');
+    this.dropSwap(room, swap);
+    this.notifySwapEnded(room, swap, 'cancelled');
+    this.broadcastState(room);
+    return OK;
+  }
+
+  /**
+   * Exchange two seat records (room.moveSeat's semantics, header): the records travel with their index and keep
+   * playerId / loadout / ownership / DIY picks. Both sides are unready here — the caller checked — and the OTHER
+   * humans are un-readied like in any other regroup (setDifficulty), because the groups they readied for just moved.
+   */
+  exchangeSeats(room, a, b) {
+    if (a.seat === b.seat) return;
+    const from = a.seat;
+    const to = b.seat;
+    a.seat = to;
+    b.seat = from;
+    room.seats[to] = a;
+    room.seats[from] = b;
+    for (const s of room.seats) if (s && !s.isBot && s.playerId !== room.hostId) s.ready = false;
+  }
+
   start(session) {
     if (this.emergency.active) return fail(ERR.SERVER_EMERGENCY);
     const room = this.roomOf(session);
@@ -922,6 +1116,8 @@ export class Lobby {
   startMatch(room, key = null) {
     const host = room.seatOf(room.hostId);
     if (host) host.ready = true;
+    // ⇄ 换位: the waiting room is over — every negotiation in flight is void, no late answer may move a seat
+    this.clearSwaps(room, 'voided');
     const seats = room.seats.filter(Boolean).map((s) => ({
       seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, connected: s.connected,
       // DESIGN §16: the human's checked operator loadout and (0.2.2) per-operator 潜能 / 练度 (bots fight with the defaults)
@@ -1247,6 +1443,7 @@ export class Lobby {
     if (session && session.roomCode === room.code) session.roomCode = null;
     this.clearGrace(playerId);
     this.dropReplay(room, playerId);
+    this.dropSwapsFor(room, playerId);
     if (this.freeSpectatorSeat(room, playerId)) return;
     const seat = room.seatOf(playerId);
     if (!seat || seat.isBot || seat.left || room.disposed) return;
@@ -1341,6 +1538,8 @@ export class Lobby {
     room.matchCtx = null;
     room.matchKey = null;
     room.replay = null;
+    for (const swap of room.swaps.values()) if (swap.timer) clearTimeout(swap.timer);
+    room.swaps.clear();
     for (const s of room.seats) {
       if (!s || s.isBot) continue;
       this.clearGrace(s.playerId);
@@ -1389,12 +1588,12 @@ export class Lobby {
   broadcastState(room) {
     if (room.disposed) return;
     this.discovery.changed();
-    const frame = prepareMessage(room.toState());
+    const frame = prepareMessage(room.toState(this.now()));
     for (const session of this.memberSessions(room)) sendPrepared(session.ws, frame);
   }
 
   sendState(room, session) {
-    sendSession(session, room.toState());
+    sendSession(session, room.toState(this.now()));
   }
 
   /** Match broadcast: encode once, send to every connected member. @returns {string | null} the encoded frame */

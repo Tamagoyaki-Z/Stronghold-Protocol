@@ -364,3 +364,29 @@ button.room-matchmaking:disabled { opacity: .45; cursor: default; }
 .ready-count__icons .icon.is-on { color: var(--mint-400); filter: drop-shadow(0 0 4px var(--mint-glow)); }
 
 .room-bar .btn--xl { min-width: 3.2rem; letter-spacing: .2em; }
+
+/* ---- ⇄ 换位 (LoL-style seat swap: room.swapAsk / room.swapAnswer) ---------------------------------- */
+/* The ⇄ on another doctor's card (greyed out by the server's own rules: unready seats only), the asker's waiting bar
+   and the asked player's dialog. Colours ride the existing room palette; every color-mix() is preceded by a plain
+   rgba() fallback for browsers without it. */
+.seat__swap { display: flex; justify-content: flex-end; align-items: center; }
+.seat__swapping { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 1px 6px; font-size: 10px;
+  letter-spacing: .06em; color: var(--mint); border: 1px solid rgba(78, 216, 175, .45);
+  border: 1px solid color-mix(in srgb, var(--mint) 45%, transparent); border-radius: 2px; }
+.seat__swapping .icon { width: .9em; height: .9em; }
+.swapbar { display: flex; align-items: center; gap: 10px; margin: 0 auto 8px; padding: 6px 12px; width: fit-content;
+  max-width: min(720px, 94vw); background: rgba(78, 216, 175, .08); border: 1px solid rgba(78, 216, 175, .38);
+  background: color-mix(in srgb, var(--mint) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mint) 38%, transparent); border-radius: 3px; }
+.swapbar__icon { color: var(--mint); flex: none; }
+.swapbar__text { color: var(--txt); font-size: 13px; }
+.swapdlg { position: fixed; inset: 0; z-index: var(--z-modal, 400); display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 11, .72); background: color-mix(in srgb, #05080b 72%, transparent); }
+.swapdlg__box { width: min(420px, 92vw); padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel, #0d1418); border: 1px solid rgba(78, 216, 175, .45);
+  border: 1px solid color-mix(in srgb, var(--mint) 45%, transparent); }
+.swapdlg__title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 18px; color: var(--txt); }
+.swapdlg__title .icon { color: var(--mint); }
+.swapdlg__text { margin: 0; font-size: 14px; color: var(--txt); line-height: 1.6; }
+.swapdlg__count { margin: 0; font-size: 13px; color: var(--lo); letter-spacing: .04em; }
+.swapdlg__btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }

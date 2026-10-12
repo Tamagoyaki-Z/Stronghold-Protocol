@@ -10,12 +10,16 @@
 // Spectator seats (community report #26, a remake feature): a co-op room with spectators shows the 观战席 strip under
 // the seats — names, offline marks, the host's ✕ (room.removeSpectator) — and a spectator's own view swaps the ready
 // button for 观战中 and offers 入座 (room.join of the room) while a player seat is free.
+// ⇄ 换位 (LoL-style champion swap, user request 2026-10-12): ANY human may ask ANOTHER human to exchange seats before
+// the match — the asked player confirms in a dialog (with a countdown) and the SERVER moves the seats, this screen
+// only renders the frames it receives. Both sides must be unready (准备后不再换位), so the ⇄ shows greyed out with the
+// reason when they are not; a negotiation in flight is published in room.state.swaps for both sides and bystanders.
 // Texts go through t() (docs/I18N.md).
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS, DEFAULT_SEATS, ROOM_CAPACITIES, MAX_SPECTATORS } from '../../../shared/constants.js';
 import {
-  html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo,
+  html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo, useTicker,
 } from '../ui/components.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { copyText } from '../ui/clipboard.js';
@@ -25,7 +29,7 @@ import { openStats } from './stats.js';
 import { SettingsButton } from '../ui/settings.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
-import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
+import { store, useStore, shallowEqual, emptyMatch, isSpectating, serverNow } from '../store.js';
 import { difficultyInfo } from './lobby.js';
 import { t, tc } from '../../../shared/i18n.js';
 
@@ -69,10 +73,19 @@ export function roomFacts(room, myId) {
   const aiLimitReached = maxAiPerRoom !== null && botCount >= maxAiPerRoom;
   const aiLimitExceeded = maxAiPerRoom !== null && botCount > maxAiPerRoom;
   const waiting = !room?.inMatch;
+  const spectating = isSpectating(room, myId);
+  const swaps = swapState(room, myId);
+  // ⇄ 换位 needs a seat of one's own, a waiting co-op room and an unready seat (user rule 2026-10-12: 准备后不再换位)
+  const canSwap = waiting && room?.mode !== 'solo' && !!mine && !mine.isBot && !mine.left && mine.connected !== false
+    && !spectating && !mine.ready;
   return {
     seats, occupied, humans, mine, isHost, readyHumans, isReady,
     emptySeats, botCount, maxAiPerRoom, aiLimitReached, aiLimitExceeded,
     allowMatchmaking: room?.allowMatchmaking !== false,
+    coop: room?.mode !== 'solo',
+    inMatch: !waiting,
+    swaps,
+    canSwap,
     canSetMatchmaking: waiting && isHost && room?.mode === 'coop' && !!mine && !mine.isBot && !mine.left,
     canAddBot: waiting && isHost && room?.mode !== 'solo' && emptySeats > 0 && !aiLimitReached,
     transferableHumans: waiting && isHost && !!mine
@@ -81,7 +94,7 @@ export function roomFacts(room, myId) {
     othersReady,
     // spectator seats (never players: not in `humans`, never counted for ready / start)
     spectators: Array.isArray(room?.spectators) ? room.spectators.filter((s) => s && typeof s === 'object') : [],
-    spectating: isSpectating(room, myId),
+    spectating,
   };
 }
 
@@ -112,7 +125,76 @@ export function inviteLink(code) {
  */
 export { copyText };
 
-export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot, onKick, onTransferHost }) {
+/**
+ * ⇄ 换位 (header): a seat swap is a NEGOTIATION between two humans, never a host decision — anybody may ask anybody
+ * else to exchange seats before the match, the asked player confirms, and the server moves the seats only then. This
+ * module therefore READS `room.state.swaps` (the negotiations in flight, `[{ from, to, ttlMs }]`) and rearranges no
+ * seat of its own: the layout below is the last frame the server sent, so nothing here can show a swap too early.
+ * @param {any} room room.state payload
+ * @param {any} myId
+ * @returns {{ all: any[], mine: any|null, incoming: any|null, busy: Set<string> }} `mine` = the ask this player sent
+ *   and is waiting on, `incoming` = the ask addressed to this player, `busy` = everybody taking part in a negotiation
+ */
+export function swapState(room, myId) {
+  const all = Array.isArray(room?.swaps) ? room.swaps.filter((s) => s && typeof s === 'object') : [];
+  const busy = new Set();
+  let mine = null;
+  let incoming = null;
+  for (const swap of all) {
+    busy.add(swap.from);
+    busy.add(swap.to);
+    if (swap.from === myId) mine = swap;
+    else if (swap.to === myId) incoming = swap;
+  }
+  return { all, mine, incoming, busy };
+}
+
+/**
+ * Whether the local player may ask `seat` for a swap right now, and — when not — the reason the greyed-out ⇄ shows.
+ * One helper drives BOTH the button and its tests, and every condition it names is enforced by the server too
+ * (server/lobby.js swapAsk / swapAnswer), so a stale frame can only make the button optimistic, never move a seat.
+ * @param {ReturnType<typeof roomFacts>} facts
+ * @param {any} seat the other player's seat record
+ * @param {any} myId
+ * @returns {{ show: boolean, allowed: boolean, hint: string|null }}
+ */
+export function swapTargetSeat(facts, seat, myId) {
+  const mine = facts.mine;
+  const show = !!mine && !mine.isBot && !mine.left && facts.coop && !facts.spectating;
+  if (!seat || seat.isBot || seat.playerId === myId || !facts.coop) return { show: false, allowed: false, hint: null };
+  let hint = null;
+  if (facts.inMatch) hint = t('开局后无法换位');
+  else if (mine?.ready) hint = t('准备后无法换位');
+  else if (facts.swaps.mine) hint = t('等待对方确认…');
+  else if (seat.connected === false || seat.left) hint = t('对方已离线，无法换位');
+  else if (seat.ready) hint = t('对方已准备，无法换位');
+  else if (facts.swaps.busy.has(seat.playerId)) hint = t('对方正在协商换位');
+  return { show, allowed: hint === null, hint: hint || t('请求与该博士交换位置') };
+}
+
+/** {@link swapTargetSeat} straight off a `room.state` payload, for callers (and tests) without a `facts` object. */
+export function swapTarget(room, myId, seat) {
+  return swapTargetSeat(roomFacts(room, myId), seat, myId);
+}
+
+/**
+ * The countdown anchor of an incoming ask. `room.state.swaps[].ttlMs` is the remainder the SERVER recomputed for the
+ * frame just received, so the local deadline is `serverNow() + ttlMs` — re-taken only when a frame changes that pair,
+ * because taking it on every render would freeze the countdown at its first value. The value is display-only: the
+ * server ends the negotiation and its `room.state` is what removes the dialog.
+ * @param {{ current: { key: string, deadline: number } | null }} ref
+ * @param {any} ask `facts.swaps.incoming`
+ * @returns {number} the deadline in `serverNow()` terms, or 0 while no ask is pending
+ */
+export function swapDeadline(ref, ask) {
+  if (!ask) { ref.current = null; return 0; }
+  const ttl = Math.max(0, Number(ask.ttlMs) || 0);
+  const key = `${ask.from}:${ttl}`;
+  if (!ref.current || ref.current.key !== key) ref.current = { key, deadline: serverNow() + ttl };
+  return ref.current.deadline;
+}
+
+export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
   const coop = room.mode !== 'solo';
   if (!seat) {
     const canAdd = coop && facts.isHost;
@@ -134,6 +216,8 @@ export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRem
   }
   const isMe = seat.playerId === myId;
   const isHostSeat = seat.playerId === room.hostId;
+  const swapping = facts.swaps.busy.has(seat.playerId);
+  const swap = swapTargetSeat(facts, seat, myId);
   const offline = seat.connected === false && !seat.isBot;
   // The host never needs to toggle ready: starting the match readies them (server rule).
   const state = offline ? 'offline' : seat.ready || seat.isBot ? 'ready' : isHostSeat ? 'host' : 'waiting';
@@ -152,6 +236,7 @@ export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRem
     <div class="seat__who">
       <span class="seat__name">${seat.name || t('博士')}</span>
       ${isMe ? html`<span class="seat__you">${t('你')}</span>` : null}
+      ${swapping ? html`<span class="seat__swapping"><${Icon} name="swap" />${t('协商中')}</span>` : null}
     </div>
     <${MicroLabel}>${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${doctorNo(seat.playerId)}`}<//>
     <footer class="seat__foot">
@@ -173,6 +258,13 @@ export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRem
           <${Button} variant="ghost" size="sm" square=${true} icon="close" loading=${busy === `kick${index}`} disabled=${!!busy}
             onClick=${() => onKick(index, seat.name, seat.playerId)} aria-label=${t('移出该博士')} />
         <//>`}
+      </div>` : null}
+      ${swap.show ? html`<div class="seat__swap">
+        <${Tooltip} text=${swap.hint}>
+          <${Button} variant="secondary" size="sm" square=${true} icon="swap" loading=${busy === `swap${index}`}
+            disabled=${!!busy || !swap.allowed} onClick=${() => onSwap(index, seat.name, seat.playerId)}
+            data-testid=${`swap-${index}`} aria-label=${t('请求与该博士交换位置')} />
+        <//>
       </div>` : null}
     </footer>
   </article>`;
@@ -274,6 +366,45 @@ function AiLastRule({ option }) {
   </div>`;
 }
 
+/** The asker's own view while it waits: which doctor was asked, and how to take the ask back. */
+function SwapBar({ facts, busy, onCancel }) {
+  const mine = facts.swaps.mine;
+  if (!mine) return null;
+  const to = facts.occupied.find((s) => s.playerId === mine.to) || null;
+  return html`<section class="swapbar" role="status" data-testid="swap-pending">
+    <${Icon} name="swap" class="swapbar__icon" />
+    <span class="swapbar__text">${t('等待「{name}」确认换位…', { name: to?.name || t('博士') })}</span>
+    <${Button} variant="ghost" size="sm" icon="close" loading=${busy === 'swapCancel'} disabled=${!!busy}
+      onClick=${onCancel} data-testid="swap-cancel">${t('撤销换位请求')}<//>
+  </section>`;
+}
+
+/**
+ * The asked player's dialog: who asks, which two seats are meant, a live countdown and the two answers. Escape and the
+ * backdrop do not dismiss it — the ask is the server's, so the dialog lives exactly as long as room.state keeps it.
+ */
+function SwapDialog({ facts, busy, left, onAnswer }) {
+  const ask = facts.swaps.incoming;
+  if (!ask) return null;
+  const asker = facts.occupied.find((s) => s.playerId === ask.from) || null;
+  const a = Number.isInteger(asker?.seat) ? asker.seat + 1 : 0;
+  const b = Number.isInteger(facts.mine?.seat) ? facts.mine.seat + 1 : 0;
+  return html`<div class="swapdlg" role="presentation">
+    <div class="swapdlg__box brackets" role="dialog" aria-modal="true" aria-label=${t('换位请求')} data-testid="swap-dialog">
+      <${MicroLabel} tone="mint">SEAT SWAP<//>
+      <h2 class="swapdlg__title"><${Icon} name="swap" />${t('换位请求')}</h2>
+      <p class="swapdlg__text">${t('「{name}」请求与你交换位置（P{a} ⇄ P{b}）。', { name: asker?.name || t('博士'), a, b })}</p>
+      <p class="swapdlg__count num">${t('{n} 秒后自动拒绝', { n: left })}</p>
+      <div class="swapdlg__btns">
+        <${Button} variant="primary" size="lg" icon="check" loading=${busy === 'swapYes'} disabled=${!!busy || left <= 0}
+          onClick=${() => onAnswer(ask.from, true)} data-testid="swap-accept">${t('同意交换')}<//>
+        <${Button} variant="secondary" size="lg" icon="close" loading=${busy === 'swapNo'} disabled=${!!busy}
+          onClick=${() => onAnswer(ask.from, false)} data-testid="swap-decline">${t('拒绝')}<//>
+      </div>
+    </div>
+  </div>`;
+}
+
 /** Room screen component. */
 export function RoomScreen() {
   const room = useStore((s) => s.room);
@@ -284,12 +415,32 @@ export function RoomScreen() {
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
   useEffect(() => () => { alive.current = false; }, []);
 
-  if (!room) return null;
+  // ⇄ 换位: `room.swapEnded` is a courtesy notice — the dialog also disappears when `room.state` stops carrying the
+  // ask, so a missed frame costs the toast and nothing else (the seat order never came from this event).
+  useEffect(() => {
+    const text = {
+      declined: t('换位被拒绝'), cancelled: t('换位请求已取消'), timeout: t('换位请求已超时'),
+      voided: t('换位请求已失效'), accepted: t('已交换位置'),
+    };
+    return net.on('room.swapEnded', (msg) => {
+      const line = text[msg?.reason];
+      if (line) toast(line, msg.reason === 'accepted' ? 'success' : 'warn');
+    });
+  }, []);
+
+  // Hooks run in the same order on every render: the ⇄ 换位 countdown is armed before the empty-room exit below.
+  const facts = room ? roomFacts(room, me.playerId) : null;
+  const pendingAsk = facts ? facts.swaps.incoming : null;
+  const swapAnchor = useRef(null);
+  const swapEndsAt = swapDeadline(swapAnchor, pendingAsk);
+  useTicker(swapEndsAt ? 200 : 0);
+
+  if (!room || !facts) return null;
   const online = conn.status === 'online';
   const coop = room.mode !== 'solo';
-  const facts = roomFacts(room, me.playerId);
   const myReady = !!facts.mine?.ready;
   const info = difficultyInfo(room.mode, room.difficulty);
+  const swapLeftS = swapEndsAt ? Math.max(0, Math.ceil((swapEndsAt - serverNow()) / 1000)) : 0;
 
   const run = async (kind, fn) => {
     if (inFlight.current) return;
@@ -324,6 +475,15 @@ export function RoomScreen() {
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
+  // ⇄ 换位: ask another doctor for its seat. The target decides; the seats move when the server says so.
+  const askSwap = (seat, name, playerId) => run(`swap${seat}`, async () => {
+    const yes = await confirmDialog({ title: t('换位请求'),
+      text: t('确定向「{name}」发起换位请求吗？对方同意后双方席位才会互换。', { name: name || t('博士') }),
+      okText: t('发起请求') });
+    if (yes) await net.request('room.swapAsk', { to: playerId });
+  });
+  const answerSwap = (from, accept) => run(accept ? 'swapYes' : 'swapNo', () => net.request('room.swapAnswer', { from, accept }));
+  const cancelSwap = () => run('swapCancel', () => net.request('room.swapCancel', {}));
   const leave = async () => {
     if (inFlight.current) return;
     const othersHere = facts.humans.some((s) => s.playerId !== me.playerId);
@@ -386,7 +546,8 @@ export function RoomScreen() {
     ${coop ? html`<${CapacityPicker} room=${room} facts=${facts} busy=${busy} connected=${online} onPick=${setCapacity} onMatchmaking=${setMatchmaking} />` : null}
     <main class=${`seats${coop ? facts.seats.length > 10 ? ' seats--dense' : facts.seats.length > 4 ? ' seats--expanded' : '' : ' seats--solo'}${coop && facts.seats.length === 10 ? ' seats--ten' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
-        myId=${me.playerId} busy=${busy} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost} />`)}
+        myId=${me.playerId} busy=${busy} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost}
+        onSwap=${askSwap} />`)}
       ${coop ? null : html`<aside class="solo-brief brackets">
         <${MicroLabel} tone="mint">BRIEFING<//>
         <h2>${DIFFICULTY_NAMES[room.difficulty] ? t(DIFFICULTY_NAMES[room.difficulty]) : ''}<span class="num t-dim"> ${info.code}</span></h2>
@@ -399,6 +560,7 @@ export function RoomScreen() {
       </aside>`}
     </main>
     <${SpectatorBar} facts=${facts} myId=${me.playerId} busy=${busy} onRemove=${removeSpectator} onSit=${sit} />
+    <${SwapBar} facts=${facts} busy=${busy} onCancel=${cancelSwap} />
 
     <footer class="room-bar">
       <div class="room-bar__left">
@@ -430,5 +592,6 @@ export function RoomScreen() {
               loading=${busy === 'ready'} disabled=${!online || !facts.mine} onClick=${toggleReady}>${myReady ? t('已就绪') : t('准备就绪')}<//>`}
       </div>
     </footer>
+    <${SwapDialog} facts=${facts} busy=${busy} left=${swapLeftS} onAnswer=${answerSwap} />
   </div>`;
 }

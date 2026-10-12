@@ -23,8 +23,9 @@ const V1_EXTENSIONS = Object.freeze({
 });
 // Published v1 has no new numeric IDs: these post-v1 business types deliberately use its JSON fallback.
 const V1_JSON_FALLBACK = Object.freeze({
-  c2s: ['room.chat', 'room.setMatchmaking', 'lobby.join', 'lobby.spectate'],
-  s2c: ['m.chat', 'm.chatState', 'm.emergency'],
+  c2s: ['room.chat', 'room.setMatchmaking', 'lobby.join', 'lobby.spectate', 'room.skins',
+    'room.swapAsk', 'room.swapAnswer', 'room.swapCancel'],
+  s2c: ['m.chat', 'm.chatState', 'm.emergency', 'room.swapAsked', 'room.swapEnded'],
 });
 
 test('v1 complete catalog fingerprint prevents accidental published field or enum renumbering', () => {

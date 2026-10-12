@@ -65,6 +65,8 @@ export const ICONS = {
   chevronRight: { d: 'M8.6 5 7.2 6.4 12.8 12l-5.6 5.6L8.6 19l7-7z' },
   chevronLeft: { d: 'M15.4 5l1.4 1.4-5.6 5.6 5.6 5.6-1.4 1.4-7-7z' },
   chevrons: { d: 'M5.6 5 4.2 6.4 9.8 12l-5.6 5.6L5.6 19l7-7zm7 0-1.4 1.4 5.6 5.6-5.6 5.6 1.4 1.4 7-7z' },
+  // ⇄ 换位 (the room's seat swap, room.swapAsk): two arrows pointing the opposite way
+  swap: { d: 'M7.4 4 3 8.4l1.4 1.4L6 8.2V19h2V8.2l1.6 1.6L11 8.4zm9.2 16 4.4-4.4-1.4-1.4L18 15.8V5h-2v10.8l-1.6-1.6L13 15.6zM3 8.4h8v2H3zm10 5.2h8v2h-8z', eo: true },
   hourglass: { d: 'M6 2h12v2h-1v3.5L13.5 12l3.5 4.5V20h1v2H6v-2h1v-3.5l3.5-4.5L7 7.5V4H6zm3 2v2.8l3 3.9 3-3.9V4zm0 16h6v-2.8l-3-3.9-3 3.9z', eo: true },
   dots: { d: 'M5 10.3a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4zm7 0a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4zm7 0a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4z' },
   key: { d: 'M14.5 3a6.5 6.5 0 1 1-2.6 12.5l-1.1 1.1H9v2H7v2H3v-3.6l5.5-5.5A6.5 6.5 0 0 1 14.5 3zm1.5 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z', eo: true },

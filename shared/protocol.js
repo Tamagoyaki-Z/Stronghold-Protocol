@@ -447,6 +447,15 @@ export const C2S = {
   // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat.
   'room.spectate': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), assetCache: isAssetCacheReadiness, $optional: ['assetCache'] },
   'room.removeSpectator': { playerId: isId },
+  // ⇄ 换位 (LoL-style champion swap, user request 2026-10-12): ANY human in a lobby — not only the host — asks ANOTHER
+  // human to exchange seats before the match. Nothing moves before the target confirms (room.swapAnswer), the asker may
+  // withdraw (room.swapCancel), and an ask that is never answered expires after LOBBY_DEFAULTS.swapTtlMs, where a
+  // timeout IS a refusal. Both sides must still be UNREADY: a seat that readied for its draft group is refused, and
+  // the server re-checks that when the answer arrives (user rule 2026-10-12: 准备后不再换位). Who negotiates with whom
+  // travels in `room.state.swaps`, so both sides and every bystander see the same state.
+  'room.swapAsk': { to: isId },
+  'room.swapAnswer': { from: isId, accept: isBool },
+  'room.swapCancel': {},
 
   // match
   'g.infoReady': { setupRevision: (v) => isInt(v, 0, 2 ** 31), $optional: ['setupRevision'] },
@@ -514,6 +523,10 @@ export const S2C = [
   'announcement.notice', // explicit server-owner command; publication alone never sends this push
   'lobby.state',
   'room.state', 'room.closed',
+  // ⇄ 换位: `room.swapAsked { from, fromName, ttlMs }` opens the target's dialog (that player alone); `room.swapEnded
+  // { with, reason }` closes it on either side (reason: declined | cancelled | timeout | voided | accepted). The seats
+  // themselves only ever move in a `room.state` frame.
+  'room.swapAsked', 'room.swapEnded',
   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
   // Post-v1 JSON fallback; repeated in welcome.emergency and match public freeze extensions.
   'm.emergency',

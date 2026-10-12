@@ -93,7 +93,11 @@ test('member controls render transfer beside kick, preserve confirmed identities
   const props = { seat: guest, index: 1, room: source, facts: roomFacts(source, 'host'), myId: 'host', busy: null,
     onTransferHost: (...args) => calls.push(args), onKick: (...args) => calls.push(args) };
   const buttons = [...walk(SeatCard(props))].filter((n) => n.type === Button);
-  assert.deepEqual(buttons.map((n) => n.props.icon), ['crown', 'close']);
+  // the third control is ⇄ 换位 (room.swapAsk): it is greyed out here because this fixture's Guest is ready
+  // (准备后不再换位 — and the server refuses the same ask, so the button only ever mirrors the rule)
+  assert.deepEqual(buttons.map((n) => n.props.icon), ['crown', 'close', 'swap']);
+  assert.equal(buttons[2].props['aria-label'], '请求与该博士交换位置');
+  assert.equal(buttons[2].props.disabled, true, 'a ready doctor is never named');
   assert.equal(buttons[0].props['aria-label'], '转让房主给该博士');
   buttons[0].props.onClick();
   buttons[1].props.onClick();
@@ -104,7 +108,17 @@ test('member controls render transfer beside kick, preserve confirmed identities
   assert.equal(botButtons.length, 1);
   botButtons[0].props.onClick();
   assert.deepEqual(calls.at(-1), [2, 'bot']);
-  assert.equal([...walk(SeatCard({ ...props, seat: { ...guest, connected: false } }))].filter((n) => n.type === Button).length, 1);
+  // ⇄ 换位: an unready doctor may be asked, a ready one never (the same rule the server enforces)
+  const open = { ...guest, ready: false };
+  const openSource = room({ seats: [host, open, bot, null] });
+  const openCard = [...walk(SeatCard({ ...props, seat: open, facts: roomFacts(openSource, 'host') }))].filter((n) => n.type === Button);
+  assert.equal(openCard.find((n) => n.props.icon === 'swap').props.disabled, false);
+  const readyAsker = [...walk(SeatCard({ ...props, myId: 'guest', seat: host, facts: roomFacts(source, 'guest') }))]
+    .filter((n) => n.type === Button && n.props.icon === 'swap');
+  assert.equal(readyAsker.length, 1, 'the ready asker still sees the control…');
+  assert.equal(readyAsker[0].props.disabled, true, '…greyed out (准备后无法换位)');
+  // the offline doctor keeps its own greyed ⇄ beside the host's ✕
+  assert.equal([...walk(SeatCard({ ...props, seat: { ...guest, connected: false } }))].filter((n) => n.type === Button).length, 2);
   assert.equal([...walk(SeatCard({ ...props, myId: 'guest', facts: roomFacts(source, 'guest') }))].filter((n) => n.type === Button).length, 0);
 });
 
