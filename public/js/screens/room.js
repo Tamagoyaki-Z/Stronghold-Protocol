@@ -34,7 +34,7 @@ import { chessAvatarUrl } from '../ui/assetUrls.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating, serverNow } from '../store.js';
 import { poolGroupOf, poolGroupSizes, GROUPED_POOL_MIN_PLAYERS } from '../../../shared/playerCapacity.js';
 import { difficultyInfo } from './lobby.js';
-import { t, tc } from '../../../shared/i18n.js';
+import { t, tc, N_ } from '../../../shared/i18n.js';
 
 /**
  * Seats padded to the room's capacity (co-op 4–20, solo 1), each null or a seat record.
@@ -128,11 +128,11 @@ export function spectateSwitchGate(room, myId) {
   const mine = facts.mine;
   if (!mine || mine.isBot || mine.left) return { can: false, reason: '' };      // no seat of one's own: nothing to give up
   // the owner's hard rule (2026-10-12): the switch is a waiting-room action only — the server refuses it in a match
-  if (room?.inMatch) return { can: false, reason: '开局后无法切换观战' };
-  if (room?.mode === 'solo') return { can: false, reason: '单人局没有观战席' };
-  if (facts.spectators.length >= MAX_SPECTATORS) return { can: false, reason: '观战席已满' };
+  if (room?.inMatch) return { can: false, reason: N_('开局后无法切换观战') };
+  if (room?.mode === 'solo') return { can: false, reason: N_('单人局没有观战席') };
+  if (facts.spectators.length >= MAX_SPECTATORS) return { can: false, reason: N_('观战席已满') };
   if (facts.humans.filter((s) => s.playerId !== myId).length === 0) {
-    return { can: false, reason: '你是同盟里唯一的博士，切换观战会让同盟解散' };
+    return { can: false, reason: N_('你是同盟里唯一的博士，切换观战会让同盟解散') };
   }
   return { can: true, reason: '' };
 }
