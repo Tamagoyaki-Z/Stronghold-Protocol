@@ -14,6 +14,8 @@
 
 import { createStore, loadPref, savePref } from '../store.js';
 import { data } from '../data.js';
+import { chessAvatarUrl } from './assetUrls.js';
+import { isRoomAvatar } from '../../../shared/protocol.js';
 
 export const SKINS_PREF = 'skins';
 export const SYNC_DEBOUNCE_MS = 500;
@@ -34,7 +36,60 @@ function readStored() {
  * The chosen skins (per browser), the sync state, and the skin currently being installed — kept apart from the
  * app store for the same reason the loadout is.
  */
-export const skinsStore = createStore({ entries: readStored(), sync: 'idle' });
+/**
+ * The stored 房间头像 (`sp.pref.skins.avatar`, user decision 2026-10-13), or null.
+ *
+ * Kept inside the same preference as the skins: it is a reference into the same manifest (`{ chessId, skinId? }`),
+ * so the two travel together and an older browser simply has none.
+ */
+function readStoredAvatar() {
+  const raw = loadPref(SKINS_PREF, null);
+  const v = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.avatar : null;
+  return isRoomAvatar(v) ? { chessId: v.chessId, skinId: v.skinId ?? null } : null;
+}
+
+/** The chosen skins (per browser), the 房间头像, and the sync state — kept apart from the app store like the loadout. */
+export const skinsStore = createStore({ entries: readStored(), avatar: readStoredAvatar(), sync: 'idle' });
+
+/** The chosen 房间头像, or null. Public to the room: room.skins { skins, avatar } → seats[].avatar. */
+export const roomAvatarOf = () => skinsStore.get().avatar || null;
+
+/**
+ * Choose the 房间头像 from one operator's art (`skinId` null = that operator's own 原皮).
+ * @param {string} chessId a base chess id @param {string|null} [skinId]
+ */
+export function setRoomAvatar(chessId, skinId = null) {
+  const next = { chessId, skinId: skinId ?? null };
+  if (!isRoomAvatar(next)) return;
+  savePref(SKINS_PREF, { ...skinsStore.get().entries, avatar: next });
+  skinsStore.set({ avatar: next });
+}
+
+/** Clear the 房间头像: the seat card goes back to its default placeholder art. */
+export function clearRoomAvatar() {
+  savePref(SKINS_PREF, { ...skinsStore.get().entries });
+  skinsStore.set({ avatar: null });
+}
+
+/**
+ * The art URL of a 房间头像 reference, or null.
+ *
+ * Resolved exactly like every other avatar (`chessAvatarUrl`, ui/assetUrls.js): the reference names a chess
+ * record, the skin is looked up under that operator in `data/assets.json`, and an unknown / missing skin falls
+ * back to the operator's own art. A 精锐 id resolves through its `baseId` to the base card — the same 口径 a
+ * skin choice uses. So the result is always a real installed art, or null — never a broken path.
+ * @param {any} m the assets manifest (`data.get('assets')`)
+ * @param {{ chessId?: string, skinId?: string|null } | null | undefined} avatar
+ * @param {(group: string, id: string) => any} [lookup] chess lookup (injected by tests)
+ * @returns {string|null}
+ */
+export function roomAvatarUrl(m, avatar, lookup = (group, id) => data.lookup(group, id)) {
+  if (!isRoomAvatar(avatar)) return null;
+  const rec = lookup('chess', avatar.chessId);
+  if (!rec) return null;
+  const base = rec.baseId ? lookup('chess', rec.baseId) || rec : rec;
+  return chessAvatarUrl(m, base, avatar.skinId ?? null);
+}
 
 /** Replace the whole selection (persisted at once; the sync picks the change up). */
 export function setSkins(entries) {
@@ -115,14 +170,15 @@ export function installSkinsSync({ net, timers } = {}) {
     if (disposed || net.status !== 'online') { setState('idle'); return; }
     try {
       const skins = skinsStore.get().entries;
-      const json = JSON.stringify(skins);
+      const avatar = skinsStore.get().avatar || null;
+      const json = JSON.stringify([skins, avatar]);
       if (json === pendingJson) return;
       if (json === lastSent && pendingJson == null) { setState('synced'); return; }
       const my = ++seq;
       pendingJson = json;
       setState('sending');
       try {
-        await net.request('room.skins', { skins });
+        await net.request('room.skins', { skins, avatar });
         if (my !== seq) return;
         pendingJson = null;
         lastSent = json;
@@ -142,7 +198,12 @@ export function installSkinsSync({ net, timers } = {}) {
   }
 
   const offWelcome = net.on('welcome', () => { lastSent = null; pendingJson = null; seq++; schedule(50); });
-  const offStore = skinsStore.subscribe((s, prev) => { if (s.entries !== prev.entries) schedule(); });
+  // 房间头像 (user decision 2026-10-13): a new avatar must not wait for an unrelated skin edit — the player just
+  // pressed 「设为房间头像」, so it goes out at once. `lastSent` keeps a redundant frame from being resent.
+  const offStore = skinsStore.subscribe((s, prev) => {
+    if (s.entries !== prev.entries) schedule();
+    else if (s.avatar !== prev.avatar) schedule(0);
+  });
 
   return {
     flush,

@@ -104,7 +104,7 @@
 
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { ERR, PHASE, DEFAULT_SEATS, ROOM_CAPACITIES, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
-import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks } from '../shared/protocol.js';
+import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, isRoomAvatar } from '../shared/protocol.js';
 import { encode, prepareMessage, sendPrepared, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
 import { Match as DefaultMatch } from './match/Match.js';
@@ -181,6 +181,25 @@ function freezeSkins(skins, getChess) {
     out[id] = String(skinId);
   }
   return Object.freeze(out);
+}
+
+/**
+ * Frozen copy of the 房间头像 a seat publishes (user decision 2026-10-13). @see shared/protocol.js isRoomAvatar
+ *
+ * The chess id is checked against the game data exactly like a skin choice — a real, visible, non-hidden,
+ * non-DIY BASE chess record, so a seat card can always resolve an art for it — while the skin id stays a
+ * cosmetic id the client resolves against its own manifest. Anything else (a malformed reference, an unknown /
+ * golden / hidden / DIY chess) yields null = "no room avatar": the seat card keeps its default placeholder and
+ * nothing is drawn blank.
+ * @param {{ chessId?: string, skinId?: string|null } | null | undefined} avatar
+ * @param {(id: string) => any} getChess
+ * @returns {Readonly<{ chessId: string, skinId: string|null }> | null}
+ */
+function freezeAvatar(avatar, getChess) {
+  if (!avatar || typeof avatar !== 'object' || !isRoomAvatar(avatar)) return null;
+  const rec = getChess(avatar.chessId);
+  if (!rec || rec.isGolden || rec.visible === false || rec.isHidden || rec.isDiy || (rec.baseId && rec.baseId !== avatar.chessId)) return null;
+  return Object.freeze({ chessId: avatar.chessId, skinId: avatar.skinId ?? null });
 }
 
 /** Deep-frozen copy of checked 自选 picks (shared by the session, the seat and the match's PlayerState). */
@@ -280,7 +299,9 @@ export class Room {
       // freezeSkins already dropped everything the data does not know, and a bot wears the default models.
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
-          skins: s.isBot ? null : s.skins || null }
+          skins: s.isBot ? null : s.skins || null,
+          // 房间头像: the art this doctor put on their seat card (null ⇒ the card keeps its default placeholder)
+          avatar: s.isBot ? null : s.avatar || null }
         : null)),
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
       // ⇄ 换位: who negotiates with whom, and how long the target still has to answer. The only place a client learns
@@ -1094,14 +1115,16 @@ export class Lobby {
    * room.skins (docs/SKINS.md): store the player's chosen operator skins on the session and the seat,
    * and hand them to a running match. No phase gate (unlike the loadout): a skin is cosmetic and public.
    */
-  skins(session, { skins }) {
+  skins(session, { skins, avatar }) {
     const data = this.safeData();
-    const cleaned = freezeSkins(skins, (id) => lookup('chess', id, data));
+    const getChess = (id) => lookup('chess', id, data);
+    const cleaned = freezeSkins(skins, getChess);
     session.skins = cleaned;
+    session.avatar = freezeAvatar(avatar, getChess);
     const room = this.roomOf(session);
     if (!room) return OK;
     const seat = room.seatOf(session.playerId);
-    if (seat) seat.skins = cleaned;
+    if (seat) { seat.skins = cleaned; seat.avatar = session.avatar; }
     // 候室皮肤: the choice is public, so every member gets a frame carrying `seats[].skins` at once — without it a
     // teammate only learned about it when the match started (or never, in the waiting room).
     this.broadcastState(room);
@@ -1177,6 +1200,7 @@ export class Lobby {
       loadout: s.isBot ? null : s.loadout || null,
       ops: s.isBot ? null : s.ops || null,
       skins: s.isBot ? null : s.skins || null,
+      avatar: s.isBot ? null : s.avatar || null,
       // 0.2.0 补位: the chess the human marked as not owned (bots own every operator)
       notOwned: s.isBot ? null : s.notOwned || null,
       // 0.2.0 自选编队: the human's checked DIY picks (bots field no 自选 piece [ASSUMED])
@@ -1480,6 +1504,7 @@ export class Lobby {
       loadout: session.loadout || null,
       ops: session.ops || null,
       skins: session.skins || null,
+      avatar: session.avatar || null,
       notOwned: session.notOwned || null,
       diy: session.diy || null,
     };

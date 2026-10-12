@@ -8,7 +8,7 @@ import { html, MicroLabel } from './components.js';
 import { useStore, shallowEqual } from '../store.js';
 import { data } from '../data.js';
 import { t } from '../../../shared/i18n.js';
-import { skinsStore, availableSkins, loadSkinData, setSkin, clearSkin } from './skins.js';
+import { skinsStore, availableSkins, loadSkinData, setSkin, clearSkin, roomAvatarOf, setRoomAvatar, clearRoomAvatar, roomAvatarUrl } from './skins.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -19,6 +19,22 @@ const cx = (...p) => p.flat().filter(Boolean).join(' ');
  */
 function skinAvatar(charId, skinId) {
   return data.get('assets')?.chars?.[charId]?.skins?.[skinId]?.avatar || null;
+}
+
+/**
+ * The 房间头像 action of one art in the 皮肤 section (user decision 2026-10-13: 「b，但是写在干员调配换皮肤的界面」).
+ *
+ * The avatar is a REFERENCE (`{ chessId, skinId }`, shared/protocol.js isRoomAvatar) to the very art this button
+ * sits on, so a player points at a picture instead of typing an id. The current choice is marked here; the row at
+ * the top of the section previews what the rest of the room sees.
+ * @param {{ chessId: string, skinId: string|null, chosen: boolean, onPick: Function }} props
+ */
+function RoomAvatarButton({ chessId, skinId, chosen, onPick }) {
+  return html`<button type="button" class=${cx('lo-skin__avatar', chosen && 'is-on')} data-room-avatar=${skinId || ''}
+      aria-pressed=${chosen ? 'true' : 'false'} title=${t('设为房间头像')}
+      onClick=${(e) => { e.stopPropagation(); onPick(chessId, skinId); }}>
+    ${chosen ? html`<${MicroLabel}>${t('房间头像')}<//>` : html`<span aria-hidden="true">◎</span>`}
+  </button>`;
 }
 
 /**
@@ -70,12 +86,27 @@ export function SkinSection({ chess }) {
 
   const chosen = s.entries[chessId] || null;
   const defaultArt = data.get('assets')?.chars?.[charId]?.avatar || null;
+  // 房间头像: the reference is per operator + skin, so exactly one card in this section can carry the mark
+  const avatar = roomAvatarOf();
+  const isAvatar = (sid) => !!avatar && avatar.chessId === chessId && (avatar.skinId ?? null) === sid;
+  const avatarArt = roomAvatarUrl(data.get('assets'), avatar);
 
   return html`<section class="lo-sec lo-sec--skin" data-testid="skin-section">
     <header class="lo-sec__head">
       <h3>${t('皮肤')}<${MicroLabel}>SKIN<//></h3>
       <span class="lo-sec__note">${t('{n} 款可选', { n: list.length })}</span>
     </header>
+    <div class="lo-skins-avatar" data-testid="room-avatar-row">
+      <span class="lo-skins-avatar__label"><${MicroLabel}>ROOM AVATAR<//>${t('房间头像')}</span>
+      ${avatar
+        ? html`<span class="lo-skins-avatar__art" title=${t('房间头像')}>
+            ${avatarArt ? html`<img src=${avatarArt} alt="" />` : html`<span aria-hidden="true">?</span>`}
+          </span>
+          <span class="lo-skins-avatar__hint">${t('房间里其他人看到的就是这张')}</span>
+          <button type="button" class="lo-skins-avatar__clear" data-clear-room-avatar="1"
+            onClick=${() => clearRoomAvatar()}>${t('取消房间头像')}</button>`
+        : html`<span class="lo-skins-avatar__hint">${t('未设置：房间座位卡显示默认头像')}</span>`}
+    </div>
     <div class="lo-skins" role="radiogroup" aria-label=${t('选择皮肤')}>
       <button type="button" role="radio" aria-checked=${chosen ? 'false' : 'true'} data-skin=""
         class=${cx('lo-skin', 'lo-skin--default', !chosen && 'is-on')} onClick=${() => clearSkin(chessId)}>
@@ -89,6 +120,7 @@ export function SkinSection({ chess }) {
           <span class="lo-skin__group">DEFAULT</span>
         </span>
         ${!chosen ? html`<span class="lo-skin__badge">${t('已装配')}</span>` : null}
+        <${RoomAvatarButton} chessId=${chessId} skinId=${null} chosen=${isAvatar(null)} onPick=${setRoomAvatar} />
       </button>
       ${list.map((x) => {
         const art = skinAvatar(charId, x.id) || defaultArt;
@@ -111,6 +143,7 @@ export function SkinSection({ chess }) {
             <span class="lo-skin__group">${x.group || 'SPECIAL'}</span>
           </span>
           ${isEquipped ? html`<span class="lo-skin__badge">${t('已装配')}</span>` : null}
+          <${RoomAvatarButton} chessId=${chessId} skinId=${x.id} chosen=${isAvatar(x.id)} onPick=${setRoomAvatar} />
         </button>`;
       })}
     </div>

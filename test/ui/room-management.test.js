@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { Button } from '../../public/js/ui/components.js';
 import {
   roomFacts, SeatCard, MatchmakingControl, roomShowsGroups, poolGroups, seatGroup, seatGroupOf, groupLetter, groupColor,
-  GROUP_COLORS, skinAvatarFor,
+  GROUP_COLORS, skinAvatarFor, seatAvatarFor,
 } from '../../public/js/screens/room.js';
+import { roomAvatarUrl } from '../../public/js/ui/skins.js';
 
 function* walk(node) {
   if (Array.isArray(node)) { for (const child of node) yield* walk(child); return; }
@@ -237,4 +238,60 @@ test('skinAvatarFor: the seat card draws the chosen skin, everything else falls 
   assert.equal(frames(SeatCard({ seat: source.seats[0], index: 0, ...props })).length, 1);
   assert.equal(frames(SeatCard({ seat: source.seats[2], index: 2, ...props }))[0].props.src, null,
     'a bot seat never asks for a skin avatar');
+});
+
+// ---- 房间头像 (user decision 2026-10-13) --------------------------------------------------------------------------
+
+test('seatAvatarFor / roomAvatarUrl: the chosen room avatar art, and nothing else', () => {
+  const M = { chars: { c1: { avatar: 'a/c1.png', skins: { s1: { avatar: 'a/c1_s1.png' }, s2: { avatar: 'a/c1_s2.png' } } } } };
+  const CHESS = { chess_char_9_01_a: { chessId: 'chess_char_9_01_a', charId: 'c1' }, chess_char_9_01_b: { chessId: 'chess_char_9_01_b', charId: 'c1', baseId: 'chess_char_9_01_a' } };
+  const lookup = (group, id) => (group === 'chess' ? CHESS[id] || null : null);
+
+  // the picked skin, the operator's own art, and the elite id resolving through its base card
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: 's1' }, lookup), 'a/c1_s1.png');
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: 's2' }, lookup), 'a/c1_s2.png', 'a different pick is a different art');
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: null }, lookup), 'a/c1.png', 'the operator default art');
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_b', skinId: 's1' }, lookup), 'a/c1_s1.png', 'the elite id uses its base card');
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: 'nope' }, lookup), 'a/c1.png',
+    'an unknown skin falls back to the operator art (never a broken path)');
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a' }, lookup), 'a/c1.png', 'skinId omitted = the default art');
+  // nothing to draw: no avatar / unknown operator / no manifest / malformed reference
+  for (const a of [null, undefined, {}, { chessId: 'nope' }, { chessId: '' }, 'x', 7]) assert.equal(roomAvatarUrl(M, a, lookup), null, JSON.stringify(a));
+  assert.equal(roomAvatarUrl(null, { chessId: 'chess_char_9_01_a', skinId: 's1' }, lookup), null, 'no manifest');
+
+  // the seat resolver follows exactly that, and only uses the avatar the player picked (no "first skin" guess)
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'chess_char_9_01_a', skinId: 's1' } }, M, lookup), 'a/c1_s1.png');
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'chess_char_9_01_a', skinId: null } }, M, lookup), 'a/c1.png');
+  // ⚠️ a seat with skins but NO avatar draws nothing here: the caller keeps its default placeholder. Picking
+  // whichever skin sorted first was the reported bug, so it must not come back through `skins`.
+  assert.equal(seatAvatarFor({ skins: { chess_char_9_01_a: 's1' } }, M, lookup), null);
+  assert.equal(seatAvatarFor({ avatar: null, skins: { chess_char_9_01_a: 's1' } }, M, lookup), null);
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'nope' }, skins: { chess_char_9_01_a: 's1' } }, M, lookup), null);
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'chess_char_9_01_a', skinId: 's1' }, isBot: true }, M, lookup), null,
+    'a bot never wears a room avatar');
+  for (const seat of [null, undefined, {}, 'x']) assert.equal(seatAvatarFor(seat, M, lookup), null, JSON.stringify(seat));
+});
+
+test('SeatCard render: a seat with a room avatar is never blank, and one without it keeps the placeholder', () => {
+  const source = room({ capacity: 4, seats: [
+    { ...host, avatar: { chessId: 'chess_char_9_01_a', skinId: 's1' } },
+    { ...guest, avatar: null },
+    bot, null,
+  ] });
+  const facts = roomFacts(source, 'host');
+  const props = { room: source, facts, myId: 'host', busy: null, onAddBot() {}, onRemoveBot() {}, onKick() {}, onTransferHost() {}, onSwap() {} };
+  const frames = (v) => [...walk(v)].filter((n) => typeof n.type === 'function' && n.type.name === 'AvatarFrame');
+
+  // the seat card always hands AvatarFrame ONE frame. This test file never loads data/assets.json, so the art
+  // resolves to null here — which is exactly the fallback contract: `src` null ⇒ AvatarFrame draws the seat
+  // glyph (P1/P2 of the waiting room), never a blank image and never another operator's art.
+  const withAvatar = frames(SeatCard({ seat: source.seats[0], index: 0, ...props }));
+  assert.equal(withAvatar.length, 1);
+  assert.equal(withAvatar[0].props.src, null, 'no manifest in this test ⇒ the placeholder path, not a crash');
+  const without = frames(SeatCard({ seat: source.seats[1], index: 1, ...props }));
+  assert.equal(without[0].props.src, null, 'no room avatar ⇒ the same default placeholder');
+  const botCard = frames(SeatCard({ seat: source.seats[2], index: 2, ...props }));
+  assert.equal(botCard[0].props.src, null, 'a bot keeps the robot glyph');
+  // the empty seat still renders its own radar placeholder (no avatar involved)
+  assert.equal(frames(SeatCard({ seat: null, index: 3, ...props })).length, 0);
 });

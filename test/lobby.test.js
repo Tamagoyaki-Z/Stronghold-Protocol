@@ -544,7 +544,7 @@ describe('websocket lobby', () => {
     assert.equal(st.inMatch, false);
     assert.equal(st.seats.length, BASE_SEATS);
     // ③c (0.2.4): a seat carries its chosen skins (`null` = the default models, bots too) — the waiting room shows them
-    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true, skins: null });
+    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true, skins: null, avatar: null });
     assert.deepEqual(st.seats.slice(1), [null, null, null]);
 
     const guest = await pool.player('Guest');
@@ -967,7 +967,7 @@ describe('websocket lobby', () => {
     assert.equal(w.token, guest.token);
     const restored = await back.waitFor('room.state');
     assert.equal(restored.code, st.code);
-    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true, skins: null }, '③c: a resumed seat carries its skins again (null here)');
+    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true, skins: null, avatar: null }, '③c: a resumed seat carries its skins again (null here)');
     await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.connected === true);
 
     // an unknown token just creates a new identity

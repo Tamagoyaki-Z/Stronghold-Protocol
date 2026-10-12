@@ -650,3 +650,67 @@
 }
 
 .diy-choice__tags { display: flex; flex-wrap: wrap; gap: .08rem; color: var(--text-lo); font-size: max(calc(.12 * var(--t)), 10px); }
+
+/* ---- 房间头像 (user decision 2026-10-13) ------------------------------------------------------------------------
+   The 皮肤 section's 「设为房间头像」 mark and the row that previews the current choice. Self-contained rules: the
+   mark needs `position: relative` on its card (the card had none before this patch), the preview row adds the
+   label / art / clear button. Every colour-mix writes the plain rgba value first, so an engine without color-mix
+   keeps a sensible colour, and nothing here uses :has() or a wait/progress cursor. */
+.lo-skin { position: relative; }
+.lo-skin__avatar {
+  position: absolute;
+  top: .06rem;
+  right: .06rem;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  min-width: .5rem;
+  height: .34rem;
+  padding: 0 .1rem;
+  background: #0a0d0c;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border: 1px solid color-mix(in srgb, var(--mint-500) 45%, transparent);
+  color: var(--text-lo);
+  font-size: max(calc(.12 * var(--t)), 10px);
+  cursor: pointer;
+}
+.lo-skin__avatar:hover { color: var(--mint-400); }
+.lo-skin__avatar.is-on {
+  background: var(--mint-500);
+  border-color: var(--mint-500);
+  color: var(--text-on-mint);
+}
+.lo-skins-avatar {
+  display: flex;
+  align-items: center;
+  gap: .12rem;
+  margin: .06rem 0 .1rem;
+  padding: .06rem .1rem;
+  background: rgba(255, 255, 255, .03);
+  background: color-mix(in srgb, var(--mint-500) 8%, transparent);
+  border: 1px solid var(--line);
+}
+.lo-skins-avatar__label { display: flex; align-items: center; gap: .06rem; flex: none; font-weight: 700; }
+.lo-skins-avatar__art {
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #0a0d0c;
+  border: 1px solid var(--line);
+}
+.lo-skins-avatar__art img { width: 100%; height: 100%; object-fit: cover; }
+.lo-skins-avatar__hint { min-width: 0; color: var(--text-lo); font-size: max(calc(.14 * var(--t)), 11px); }
+.lo-skins-avatar__clear {
+  flex: none;
+  margin-left: auto;
+  padding: .02rem .1rem;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-lo);
+  font-size: max(calc(.14 * var(--t)), 11px);
+  cursor: pointer;
+}
+.lo-skins-avatar__clear:hover { color: var(--text-hi); border-color: var(--line-2); }

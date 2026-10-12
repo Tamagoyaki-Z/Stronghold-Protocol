@@ -74,7 +74,7 @@ const quietLog = () => ({ log: { info() {}, warn() {}, debug() {}, error() {} } 
 
 describe('room.skins structure (shared/protocol.js)', () => {
   test('accepts { baseChessId: skinId } with @ and #, refuses arrays / null / bad ids / too many entries', async () => {
-    const { validateC2S, isSkinId, isSkinSelection, SKIN_LIMITS } = await import('../../shared/protocol.js');
+    const { validateC2S, isSkinId, isSkinSelection, SKIN_LIMITS, isRoomAvatar } = await import('../../shared/protocol.js');
     const okShape = (skins) => validateC2S({ t: 'room.skins', skins }) === null;
     assert.ok(isSkinId(SKIN_A), 'a skin id may carry @ and #');
     assert.ok(!isSkinId(''), 'empty');
@@ -93,6 +93,26 @@ describe('room.skins structure (shared/protocol.js)', () => {
     for (let i = 0; i <= SKIN_LIMITS.entries; i++) many[`c${i}`] = SKIN_A;
     assert.ok(!okShape(many), 'too many entries');
     assert.equal(validateC2S({ t: 'room.skins' }), 'bad field skins');
+  });
+
+  test('room skins avatar: { chessId, skinId? }, null clears it, optional for an older client, junk refused', async () => {
+    const { validateC2S, isRoomAvatar } = await import('../../shared/protocol.js');
+    const okAvatar = (avatar) => validateC2S({ t: 'room.skins', skins: {}, avatar }) === null;
+    assert.ok(isRoomAvatar({ chessId: SKADI }), 'the operator alone = its own default art');
+    assert.ok(isRoomAvatar({ chessId: SKADI, skinId: SKIN_A }), 'an art of a built-in skin');
+    assert.ok(isRoomAvatar({ chessId: SKADI, skinId: null }), 'explicitly the default art');
+    assert.ok(okAvatar({ chessId: SKADI, skinId: SKIN_A }));
+    assert.ok(okAvatar({ chessId: SKADI }));
+    assert.ok(okAvatar(null), 'null clears the room avatar');
+    assert.ok(validateC2S({ t: 'room.skins', skins: {} }) === null, 'absent avatar = an older client');
+    for (const bad of [[], 'x', 7, {}, { chessId: '' }, { chessId: 'bad id!' }, { chessId: SKADI, skinId: '' },
+      { chessId: SKADI, skinId: 'a b' }, { chessId: SKADI, skinId: 'x'.repeat(65) }]) {
+      assert.equal(isRoomAvatar(bad), false, `refused ${JSON.stringify(bad)}`);
+      assert.equal(okAvatar(bad), false, `refused over the wire ${JSON.stringify(bad)}`);
+    }
+    // the avatar never replaces the skins: both fields travel in one message
+    assert.equal(validateC2S({ t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: SKIN_A }, nope: 1 }), null,
+      'unknown extra fields stay ignored, exactly like before');
   });
 });
 
@@ -185,6 +205,69 @@ describe('room.skins (lobby): freeze on the session and the seat, hand over to t
     const resumed = await back.waitFor('room.state', (s) => !!s.seats.find((x) => x && x.playerId === back.id));
     assert.deepEqual(resumed.seats.find((x) => x.playerId === back.id).skins, { [SKADI]: SKIN_A },
       'a resumed session comes back into the waiting room wearing its skins');
+  });
+
+  test('room.state.seats[].avatar carries the chosen room avatar to the WHOLE waiting room, and follows a change', async () => {
+    const host = await pool.player('AvatarHost');
+    const guest = await pool.player('AvatarGuest');
+    await ok(host, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+    const created = await host.waitFor('room.state', (s) => s.hostId === host.id);
+    await ok(guest, { t: 'room.join', code: created.code });
+    await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 2);
+    await ok(host, { t: 'room.addBot' });
+    await host.waitFor('room.state', (s) => s.seats.some((x) => x && x.isBot));
+
+    // ① the guest picks one of their operator arts as the room avatar: the OTHER member learns it from room.state
+    const seen = host.waitFor('room.state', (s) => !!s.seats.find((x) => x && x.playerId === guest.id)?.avatar);
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: SKIN_A } });
+    const first = await seen;
+    const gSeat = first.seats.find((x) => x.playerId === guest.id);
+    assert.deepEqual(gSeat.avatar, { chessId: SKADI, skinId: SKIN_A }, 'the exact reference reached the bystander');
+    assert.deepEqual(gSeat.skins, { [SKADI]: SKIN_A }, 'the skins map is untouched by the avatar');
+    assert.equal(first.seats.find((x) => x.isBot).avatar, null, 'a bot has no room avatar');
+    assert.equal(first.seats.find((x) => x.playerId === host.id).avatar, null, 'a doctor who picked none says so');
+
+    // ② changing it follows, and the second frame is what the room sees
+    const changed = host.waitFor('room.state', (s) => s.seats.find((x) => x && x.playerId === guest.id)?.avatar?.skinId === SKIN_B);
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: SKIN_B } });
+    assert.deepEqual((await changed).seats.find((x) => x.playerId === guest.id).avatar, { chessId: SKADI, skinId: SKIN_B });
+
+    // ③ clearing it: null, back to the default placeholder
+    const cleared = host.waitFor('room.state', (s) => {
+      const st = s.seats.find((x) => x && x.playerId === guest.id);
+      return !!st && st.skins !== null && st.avatar === null;
+    });
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: null });
+    assert.equal((await cleared).seats.find((x) => x.playerId === guest.id).avatar, null);
+
+    // ④ an unknown / illegal chess id is dropped by the server: no avatar, and nothing crashes
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: 'chess_char_9_99_a', skinId: SKIN_A } });
+    assert.equal(SkinStub.instances.length + RecordingStub.instances.length, 0, 'no match was ever started here');
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: GOLDEN.chessId, skinId: SKIN_A } });
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI_ELITE, skinId: SKIN_A } });
+    // a malformed reference is refused at the protocol before the handler ever runs
+    await err(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: 'a b' } }, ERR.BAD_MSG);
+    // and what survives all of that is still the previous good state (null after ③)
+    const last = await (async () => {
+      // the predicate must name the avatar we are waiting FOR: an intermediate frame (still null after ③)
+      // also carries the guest's seat and would otherwise satisfy a looser wait
+      const w = host.waitFor('room.state', (s) =>
+        s.seats.find((x) => x && x.playerId === guest.id)?.avatar?.skinId === SKIN_B);
+      await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_B }, avatar: { chessId: SKADI, skinId: SKIN_B } });
+      return w;
+    })();
+    assert.deepEqual(last.seats.find((x) => x.playerId === guest.id).avatar, { chessId: SKADI, skinId: SKIN_B });
+    await ok(guest, { t: 'room.leave' });
+  });
+
+  test('an unknown chess id never reaches the room state: the seat keeps null (no blank, no crash)', async () => {
+    const host = await pool.player('JunkAvatar');
+    await ok(host, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+    await host.waitFor('room.state', (s) => s.hostId === host.id);
+    // the handshake accepts the id, the lobby's freeze drops it: the seat publishes null, never a broken reference
+    await ok(host, { t: 'room.skins', skins: {}, avatar: { chessId: 'chess_char_9_99_a', skinId: SKIN_A } });
+    const frame = await host.waitFor('room.state', (s) => !!s.seats.find((x) => x && x.playerId === host.id));
+    assert.equal(frame.seats.find((x) => x.playerId === host.id).avatar, null);
   });
 
   test('seats[].skins reaches the match: start() hands it over in the seat descriptors', async () => {

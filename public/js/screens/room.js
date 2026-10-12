@@ -31,6 +31,7 @@ import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { data } from '../data.js';
 import { chessAvatarUrl } from '../ui/assetUrls.js';
+import { roomAvatarUrl } from '../ui/skins.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating, serverNow } from '../store.js';
 import { poolGroupOf, poolGroupSizes, GROUPED_POOL_MIN_PLAYERS } from '../../../shared/playerCapacity.js';
 import { difficultyInfo } from './lobby.js';
@@ -231,6 +232,28 @@ export function skinAvatarFor(seat, m, lookup = (group, id) => data.lookup(group
   return null;
 }
 
+/**
+ * The art a room seat card draws for one doctor, or null (the card then keeps its own default placeholder glyph).
+ *
+ * 房间头像 (user decision 2026-10-13: 「房间里的头像，只会选择整个干员列表里顺位第一的干员皮肤，没法换成其他的」): the
+ * avatar is the art the player explicitly picked on the 皮肤 screen, published as `room.state.seats[].avatar`
+ * (`{ chessId, skinId? }`) and resolved by the shared resolver (ui/skins.js roomAvatarUrl — the same
+ * `chessAvatarUrl` every other avatar uses, so a 精锐 id reaches its base card and an unknown skin falls back to
+ * the operator's own art).
+ *
+ * ⚠️ There is deliberately NO "representative skin" fallback here: picking whichever skin sorted first was
+ * exactly the bug this replaces, because it showed a stranger's operator and never changed. A seat with no
+ * avatar shows the default placeholder — the doctor's own choice, or nothing.
+ * @param {any} seat a room.state seat record
+ * @param {any} m the assets manifest (`data.get('assets')`)
+ * @param {(group: string, id: string) => any} [lookup] chess lookup (injected by tests)
+ * @returns {string|null}
+ */
+export function seatAvatarFor(seat, m, lookup = (group, id) => data.lookup(group, id)) {
+  if (!seat || typeof seat !== 'object' || seat.isBot || !m) return null;
+  return roomAvatarUrl(m, seat.avatar, lookup);
+}
+
 /** The card's own group colour: the --group-color the border, the badge and the totals row all read. */
 function cardStyle(index, group) {
   const tint = group >= 0 ? `--group-color:${groupColor(group)};` : '';
@@ -330,9 +353,10 @@ export function swapDeadline(ref, ask) {
 export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
   const coop = room.mode !== 'solo';
   const chip = group >= 0 ? html`<${GroupChip} group=${group} />` : null;
-  // 候室皮肤: the teammate's chosen skin on its seat card (null ⇒ the card keeps its own glyph; AvatarFrame also
-  // falls back on a load error, so a missing file never leaves a blank avatar)
-  const skin = seat && !seat.isBot ? skinAvatarFor(seat, data.get('assets')) : null;
+  // 房间头像 (user decision 2026-10-13): the art this doctor picked on the 皮肤 screen, or null ⇒ the card keeps
+  // its own default placeholder glyph. AvatarFrame also falls back on a load error, so a missing file never
+  // leaves a blank avatar.
+  const skin = seatAvatarFor(seat, data.get('assets'));
   if (!seat) {
     const canAdd = coop && facts.isHost;
     return html`<article class=${`seat seat--empty${groupedClass(group)}`} style=${cardStyle(index, group)}>

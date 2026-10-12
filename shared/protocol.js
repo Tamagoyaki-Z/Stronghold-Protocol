@@ -88,6 +88,25 @@ export const isSkinId = (v) => typeof v === 'string' && v.length > 0 && v.length
 /** Structural check of `room.skins.skins`. */
 export const isSkinSelection = (v) => isMap(v, SKIN_LIMITS.entries, isId, isSkinId);
 
+/**
+ * 房间头像 (user decision 2026-10-13: 「b，但是写在干员调配换皮肤的界面」): the art a player chose for their
+ * waiting-room seat card, shown to everybody in the room.
+ *
+ * Shape: `{ chessId, skinId? }` — the base chess record of the operator whose art it is, plus the skin it was
+ * picked from (absent / null = that operator's own 原皮, which is why a player may make the default art their
+ * avatar too). It is deliberately a REFERENCE, never a URL or a path: the client resolves it against
+ * `data/assets.json` with the same `chessAvatarUrl` the rest of the UI uses, so a client whose manifest lacks
+ * that art falls back to the operator's own art and then to the seat's default placeholder — never a blank.
+ *
+ * `null` is meaningful and the C2S field is therefore `nullable`: null CLEARS the avatar, which is how a seat
+ * card goes back to its default 等待博士 placeholder art.
+ */
+export const isRoomAvatar = (v) => {
+  if (!isPlain(v) || !isId(v.chessId)) return false;
+  if (v.skinId === undefined || v.skinId === null) return true;
+  return isSkinId(v.skinId);
+};
+
 // ---- operator loadout (DESIGN §16): room.loadout { entries } -------------------------------------------------
 
 /**
@@ -434,8 +453,14 @@ export const C2S = {
   // operator loadout (DESIGN §16): stored per session/seat; accepted until the match leaves INFO_CHECK — `ops` (0.2.2):
   // the per-operator 潜能 / 练度 (absent = none set: every operator at 潜能 6, 精英2 Lv.60)
   'room.loadout': { entries: isLoadoutEntries, ops: isLoadoutOps, $optional: ['ops'] },
-  // operator skins (docs/SKINS.md): cosmetic, public to teammates, accepted in any phase
-  'room.skins': { skins: isSkinSelection },
+  // operator skins (docs/SKINS.md): cosmetic, public to teammates, accepted in any phase.
+  // `avatar` (房间头像, user decision 2026-10-13) rides along: the art this player put on their waiting-room seat
+  // card, `{ chessId, skinId? }`, null/none to clear it. It uses this message rather than `room.loadout` on
+  // purpose — room.loadout is refused once the match leaves INFO_CHECK, while an avatar stays changeable and is
+  // stored per session/seat like a skin. Optional, so a client that predates it keeps sending `skins` alone;
+  // `room.skins` is a v1 JSON-fallback message (test/wire-codec.test.js V1_JSON_FALLBACK.c2s), so the extra
+  // field is that fallback's own extension slot, never a wire renumber.
+  'room.skins': { skins: isSkinSelection, avatar: nullable(isRoomAvatar), $optional: ['avatar'] },
   // operator ownership (干员持有, 0.2.0 补位): stored per session / seat; a match takes the list its seat had when it
   // started (an out-of-match setting — during a match it is stored for the next one: ROOM_STARTED)
   'room.ownership': { notOwned: isNotOwnedList },
