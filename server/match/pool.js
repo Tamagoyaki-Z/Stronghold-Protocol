@@ -19,7 +19,7 @@
 // the promotion reward and random grants pass diyStockEntries (the roll's own tier, DESIGN §30.23). Weighted by its
 // copies like any chess, drawn by that player only.
 
-import { poolGroupSizes, poolCopyScale } from '../../shared/playerCapacity.js';
+import { poolGroupSizes, poolCopyScale, poolGroupScale, scaleCopies } from '../../shared/playerCapacity.js';
 
 /** Groups are assigned by occupied seat order at match start and never reshuffled after eliminations. */
 export function createPoolGroups(gd, players, opts = {}) {
@@ -29,7 +29,8 @@ export function createPoolGroups(gd, players, opts = {}) {
     const members = sorted.slice(offset, offset + size);
     const playerIds = members.map((p) => p.playerId);
     offset += size;
-    const scale = poolCopyScale(size);
+    // the group's ACTUAL scale (floored below the baseline, so a solo/duo room keeps the full pool)
+    const scale = poolGroupScale(size);
     return { id: i + 1, playerIds, scale, pool: new SharedPool(gd, { ...opts, scale }),
       itemPool: new SharedItemPool(gd, () => members, { scale }) };
   });
@@ -83,9 +84,9 @@ export class SharedPool {
     for (const id of gd.visibleChess) {
       if (ban.has(id)) continue;
       const tier = gd.tierOf(id);
-      const scaled = gd.poolCopies(id) * this.scale;
-      // Preserve the five-player tier III floor rule against the current co-op baseline (36 * 1.25 = 45).
-      const cap = this.scale === poolCopyScale(5) && tier === 3 ? Math.floor(scaled) : Math.ceil(scaled);
+      // Proportional to the group's share of the four-person baseline: tier III is floored, the other tiers
+      // are ceiled (shared/playerCapacity.js scaleCopies — the same rule the five-person group always used).
+      const cap = scaleCopies(gd.poolCopies(id), this.scale, tier);
       if (cap <= 0) continue;
       this.entries.set(id, { cap, left: cap, tier });
     }
@@ -216,7 +217,10 @@ export class SharedItemPool {
   }
   cap(id) {
     const cap = this.gd.itemPoolCopies(id);
-    return cap == null ? null : Math.ceil(cap * this.scale);
+    // The same proportional share as the chess pool — including its below-baseline floor, so a solo/duo room
+    // keeps the four-person equipment stock. Equipment has no tier III floor of its own, so every equipment tier
+    // is ceiled: a three-person group fields ceil(4 * 0.75) = 3 of a tier I item, a five-person one ceil(4 * 1.25) = 5.
+    return cap == null ? null : scaleCopies(cap, this.scale, 0);
   }
   need(id) { return this.gd.isGolden(id) ? 2 : 1; }
   // All owned equipment counts, including a noPool-marked trait grant. noPool only affects the acquisition gate.

@@ -5,6 +5,7 @@ import { GameData } from '../../server/match/gamedata.js';
 import { SharedPool, drawDisabledBonds } from '../../server/match/pool.js';
 import { createRng } from '../../server/sim/rng.js';
 import { DATA, makeMatch, give, checkInvariants, chessOfTier } from './harness.js';
+import { scaleCopies } from '../../shared/playerCapacity.js';
 
 const gdOf = (modeId = 'mode_multi_normal') => new GameData(DATA, modeId);
 
@@ -30,8 +31,7 @@ test('five-player pool: current co-op tier III has 45 copies, other tiers and id
   const gd = gdOf(), pool = new SharedPool(gd, { scale: 1.25 });
   const caps = { 1: 30, 2: 35, 3: 45, 4: 40, 5: 20, 6: 13 };
   for (const [id, entry] of pool.entries) {
-    const scaled = gd.poolCopies(id) * 1.25;
-    const expected = entry.tier === 3 ? Math.floor(scaled) : Math.ceil(scaled);
+    const expected = scaleCopies(gd.poolCopies(id), 1.25, entry.tier);
     assert.equal(entry.cap, expected, id);
     if (!Object.hasOwn(DATA.config.economy.poolCopiesOverrides, id)) assert.equal(entry.cap, caps[entry.tier], `${id} tier baseline`);
     assert.equal(pool.take(id, 100), expected, `${id}: only the expected copies are available`);
@@ -39,6 +39,19 @@ test('five-player pool: current co-op tier III has 45 copies, other tiers and id
     assert.equal(pool.give(id, 100), expected, `${id}: returns clamp at the new cap`);
     assert.equal(pool.left(id), expected);
   }
+});
+
+test('three-player pool: the same rule below 1 — three quarters of the four-person baseline, tier III floored', () => {
+  const gd = gdOf(), pool = new SharedPool(gd, { scale: 0.75 });
+  const caps = { 1: 18, 2: 21, 3: 27, 4: 24, 5: 12, 6: 8 };
+  for (const [id, entry] of pool.entries) {
+    assert.equal(entry.cap, scaleCopies(gd.poolCopies(id), 0.75, entry.tier), id);
+    if (!Object.hasOwn(DATA.config.economy.poolCopiesOverrides, id)) assert.equal(entry.cap, caps[entry.tier], `${id} tier baseline`);
+    assert.ok(entry.cap > 0, `${id} stays in the pool at 0.75`);
+  }
+  // the measured identity override scales with everything else (4 -> 3), never the full four-person value
+  assert.equal(pool.cap('chess_char_6_11_a'), Math.ceil(gd.poolCopies('chess_char_6_11_a') * 0.75));
+  assert.ok(pool.cap('chess_char_6_11_a') < gd.poolCopies('chess_char_6_11_a'));
 });
 
 test('take/give never go below 0 or above the cap', () => {

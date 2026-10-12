@@ -52,8 +52,48 @@ export function poolGroupOf(seat, occupied) {
   return -1;
 }
 
-/** A three-player group keeps the complete original pool; only a five-player group expands. */
-export const poolCopyScale = (groupSize) => Math.max(1, groupSize / BASE_SEATS);
+/**
+ * The pool-copy scale of one fixed group: the share of the four-person baseline it fields.
+ *
+ * Proportional in BOTH directions (user decision 2026-10-13: the 3-person group was taking a full four-person
+ * pool, so 6 seats = 3 + 3 handed each half-room the whole baseline and per-head supply went UP): a 3-person
+ * group fields 0.75x and a 5-person group 1.25x. One exception is kept: a room below the four-person baseline
+ * (a solo or duo run) keeps the complete pool, because `max(1, .)` is what those rooms have always had. Three
+ * is the smallest group the fixed layouts can produce (6 seats = 3 + 3), so only a real group is scaled down.
+ */
+export const poolCopyScale = (groupSize) => groupSize / BASE_SEATS;
+
+/**
+ * How many copies one GROUP actually fields: `poolCopyScale` with the below-baseline floor applied.
+ *
+ * Only a real fixed group is ever scaled down. Three is the smallest the layouts can produce (6 seats = 3 + 3),
+ * so in practice a 3-person group gets 0.75x while a room below the four-person baseline (solo / duo, whose
+ * layouts are [1] and [2]) keeps the complete four-person pool — the behaviour those rooms always had. The
+ * floor lives here, and only here, so `poolCopyScale(3)` stays the honest 0.75 while every consumer of the
+ * actual sizes shares one definition.
+ */
+export const poolGroupScale = (groupSize) => (groupSize >= 3 ? poolCopyScale(groupSize) : 1);
+
+/**
+ * Copies of one pool entry at `scale`: the group's share of the four-person baseline.
+ *
+ * Rounding is the fork's existing convention (docs/PLAYER_CAPACITY.md, D028), generalised to every scale
+ * so that "a group of N is worth N/4 of the baseline" holds above and below 1 alike:
+ *   * tier III is FLOORED — the measured 0.2.4 identity (36 at scale 1) is a ceiling for that tier, so a
+ *     five-person group's 36 * 1.25 = 45 and a three-person group's 36 * 0.75 = 27;
+ *   * every other tier is CEILED, and identity overrides follow the same rule
+ *     (the measured `poolCopiesOverrides` values are the shipped numbers, never rounded below).
+ *
+ * A zero copy count drops the chess from the group's pool (SharedPool's `cap <= 0` guard): at 0.75 no
+ * tier reaches zero, the floor only matters for a future scale below 1/10.
+ * @param {number} base the four-person baseline count of one chess / equipment
+ * @param {number} scale the group's share of BASE_SEATS (`poolCopyScale`)
+ * @param {number} tier the chess's tier (1-6); equipment passes 0
+ */
+export function scaleCopies(base, scale, tier) {
+  const scaled = base * scale;
+  return tier === 3 ? Math.floor(scaled) : Math.ceil(scaled);
+}
 
 /** The opening pool-group count sets the Unite limit; later departures never lower it. */
 export const uniteRoundLimit = (poolGroupCount) => Number.isInteger(poolGroupCount)

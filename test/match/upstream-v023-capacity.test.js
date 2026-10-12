@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ERR, PHASE } from '../../shared/constants.js';
 import { makeMatch, checkInvariants } from './harness.js';
+import { scaleCopies, poolGroupScale } from '../../shared/playerCapacity.js';
 
 function approveOpening(m) {
   assert.deepEqual(m.requestSetupReroll('p_0', m.setupRevision), { ok: true });
@@ -35,8 +36,7 @@ for (const [count, sizes] of [[6, [3, 3]], [9, [4, 5]], [13, [5, 4, 4]], [20, [4
       for (const id of m.gd.visibleChess) {
         assert.equal(group.pool.has(id), !m.bannedChess.includes(id));
         if (!group.pool.has(id)) continue;
-        const scaled = m.gd.poolCopies(id) * group.scale;
-        const expected = group.playerIds.length === 5 && m.gd.tierOf(id) === 3 ? Math.floor(scaled) : Math.ceil(scaled);
+        const expected = scaleCopies(m.gd.poolCopies(id), group.scale, m.gd.tierOf(id));
         assert.equal(group.pool.cap(id), expected);
         assert.equal(group.pool.left(id), expected);
       }

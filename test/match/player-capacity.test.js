@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DATA, makeMatch, give } from './harness.js';
-import { poolGroupSizes, poolCopyScale } from '../../shared/playerCapacity.js';
+import { poolGroupSizes, poolCopyScale, poolGroupScale, scaleCopies } from '../../shared/playerCapacity.js';
 import { makeCtx } from '../../server/match/effectsMeta.js';
 
 const GROUP_CASES = [[1, [1]], [2, [2]], [3, [3]], [4, [4]], [5, [5]], [6, [3, 3]], [7, [4, 3]],
@@ -10,24 +10,27 @@ const GROUP_CASES = [[1, [1]], [2, [2]], [3, [3]], [4, [4]], [5, [5]], [6, [3, 3
   [18, [4, 4, 4, 3, 3]], [19, [4, 4, 4, 4, 3]], [20, [4, 4, 4, 4, 4]]];
 const COOP_CAPS = { 1: 24, 2: 28, 3: 36, 4: 32, 5: 16, 6: 10 };
 const FIVE_PLAYER_CAPS = { 1: 30, 2: 35, 3: 45, 4: 40, 5: 20, 6: 13 };
+// 0.75 x the four-person baseline (user decision 2026-10-13): a three-person group fields that share of the pool.
+// III is floored (36 * .75 = 27), the rest ceiled (24 * .75 = 18, 28 * .75 = 21, 32 * .75 = 24, 16 * .75 = 12,
+// 10 * .75 = 7.5 -> 8), so the chess with the measured 4x identity still costs 27.
+const THREE_PLAYER_CAPS = { 1: 18, 2: 21, 3: 27, 4: 24, 5: 12, 6: 8 };
 
 for (const [count, sizes] of GROUP_CASES) {
-  test(`${count} players: fixed pool groups ${sizes.join('+')}, including a complete co-op pool for three`, () => {
+  test(`${count} players: fixed pool groups ${sizes.join('+')}, each scaled to its share of the four-person baseline`, () => {
     const h = makeMatch({ humans: count, fake: true });
     const m = h.m;
     assert.deepEqual(poolGroupSizes(count), sizes);
     assert.deepEqual(m.poolGroups.map((g) => g.playerIds.length), sizes);
     assert.equal(new Set(m.poolGroups.flatMap((g) => g.playerIds)).size, count);
     for (const group of m.poolGroups) {
-      assert.equal(group.scale, poolCopyScale(group.playerIds.length));
+      assert.equal(group.scale, poolGroupScale(group.playerIds.length));
       for (const [id, entry] of group.pool.entries) {
-        const five = group.playerIds.length === 5;
-        const base = m.gd.poolCopies(id);
-        const scaled = base * group.scale;
-        const expected = five && entry.tier === 3 ? Math.floor(scaled) : Math.ceil(scaled);
+        const size = group.playerIds.length;
+        const expected = scaleCopies(m.gd.poolCopies(id), group.scale, entry.tier);
         assert.equal(entry.cap, expected, id);
         if (!Object.hasOwn(m.gd.economy.poolCopiesOverrides || {}, id)) {
-          assert.equal(entry.cap, (five ? FIVE_PLAYER_CAPS : COOP_CAPS)[entry.tier], `${id} tier baseline`);
+          const table = size === 5 ? FIVE_PLAYER_CAPS : size === 3 ? THREE_PLAYER_CAPS : COOP_CAPS;
+          assert.equal(entry.cap, table[entry.tier], `${id} tier baseline`);
         }
       }
       for (const id of group.playerIds) assert.equal(m.poolFor(id), group.pool);
@@ -88,11 +91,52 @@ test('depleting one group leaves shop rolls and effect grants of the other group
   const held = p0.pool.take(id, 1000);
   assert.equal(p0.pool.roll(h.m.rngMeta, { filter: (x) => x === id }), null);
   assert.equal(p4.pool.roll(h.m.rngMeta, { filter: (x) => x === id }), id);
-  assert.equal(p4.pool.cap(id), h.m.gd.poolCopies(id), 'three-player group has the full current co-op amount');
+  assert.equal(p4.pool.cap(id), scaleCopies(h.m.gd.poolCopies(id), 0.75, p4.pool.entries.get(id).tier),
+    'a three-player group fields three quarters of the four-person amount');
   p0.pool.give(id, held);
   h.invariants();
   h.m.dispose();
 });
+
+// 0.75 x the four-person baseline (user decision 2026-10-13: 「按比例缩放」), as a printed对照表 so a reader can
+// check the numbers without running the match. identity overrides are scaled the same way (mlyss 4 -> 3).
+for (const [count, sizes, scales] of [[6, [3, 3], [0.75, 0.75]], [10, [4, 3, 3], [1, 0.75, 0.75]]]) {
+  test(`${count} players: every group's copies are its share of the four-person baseline (${sizes.join('+')})`, () => {
+    const h = makeMatch({ humans: count, fake: true });
+    const m = h.m;
+    try {
+      assert.deepEqual(m.poolGroups.map((g) => g.playerIds.length), sizes);
+      assert.deepEqual(m.poolGroups.map((g) => g.scale), scales);
+      const table = (size, tier) => {
+        const fixed = size === 5 ? FIVE_PLAYER_CAPS : size === 3 ? THREE_PLAYER_CAPS : COOP_CAPS;
+        return size >= 3 ? fixed[tier] : COOP_CAPS[tier];
+      };
+      for (const g of m.poolGroups) {
+        const size = g.playerIds.length;
+        for (const [id, entry] of g.pool.entries) {
+          const want = scaleCopies(m.gd.poolCopies(id), g.scale, entry.tier);
+          if (entry.cap !== want) {
+            console.log('DIAG', JSON.stringify({ size, scale: g.scale, id, tier: entry.tier, override: (m.gd.economy.poolCopiesOverrides || {})[id] ?? null, gdCopies: m.gd.poolCopies(id), want, cap: entry.cap }));
+          }
+          assert.equal(entry.cap, want, `${id} in the ${size}-person group`);
+          if (!Object.hasOwn(m.gd.economy.poolCopiesOverrides || {}, id)) {
+            assert.equal(entry.cap, table(size, entry.tier), `${id} tier ${entry.tier} at scale ${g.scale}`);
+          }
+        }
+        // equipment follows the same scale (SharedItemPool)
+        for (const id of ['chess_item_1_01_e_a', 'chess_item_5_07_e_a']) {
+          const cap = g.itemPool.cap(id);
+          if (cap == null) continue;
+          assert.equal(cap, Math.ceil(m.gd.itemPoolCopies(id) * g.scale), `${id} equipment at scale ${g.scale}`);
+        }
+      }
+      // the measured identity override scales too (4 * .75 = 3 for a three-person group, never the full four)
+      assert.equal(m.poolGroups[0].pool.cap('chess_char_6_11_a'),
+        Math.ceil(m.gd.poolCopies('chess_char_6_11_a') * m.poolGroups[0].scale), 'identity override scales');
+      h.invariants();
+    } finally { m.dispose(); }
+  });
+}
 
 test('nine players: a five-player group does not expand private DIY stock', () => {
   const slotId = 'chess_char_5_diy1_a';

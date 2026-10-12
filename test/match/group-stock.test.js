@@ -4,6 +4,7 @@ import { makeCtx } from '../../server/match/effectsMeta.js';
 import { installDraftFacade } from '../../server/match/match/phases.js';
 import { DATA, makeMatch, checkInvariants } from './harness.js';
 import { PHASE } from '../../shared/constants.js';
+import { scaleCopies, poolGroupScale } from '../../shared/playerCapacity.js';
 
 const PACK = 'chess_item_5_07_e_a';
 const SMALL = 'chess_item_1_01_e_a';
@@ -43,7 +44,7 @@ test('Mimic overdraw stays in the receiving fixed group, with public supply clam
   } finally { m.dispose(); }
 });
 
-test('equipment uses full fixed three/four-person stock, with five-person limits rounded up', () => {
+test('equipment stock scales with its group: full for three/four, x1.25 for five, x0.75 for a six-room group', () => {
   for (const humans of [3, 4, 5, 6, 9, 20]) {
     const h = makeMatch({ humans, seed: 11 });
     try {
@@ -51,6 +52,8 @@ test('equipment uses full fixed three/four-person stock, with five-person limits
         const stock = g.itemPool;
         assert.equal(stock.cap(PACK), Math.ceil(2 * g.scale));
         assert.equal(stock.cap(SMALL), Math.ceil(4 * g.scale));
+        // the shared rule has no tier III floor for equipment: every tier is ceiled at the group's scale
+        assert.equal(stock.cap(SMALL), scaleCopies(4, g.scale, 0));
         assert.equal(stock.cap('chess_item_2_03_e_a'), null, 'effect-only equipment remains uncapped');
         assert.ok(g.playerIds.every((id) => h.m.itemPoolFor(id) === stock));
       }
@@ -183,7 +186,7 @@ test('an opening setup reroll recreates all fixed equipment pools, including the
     assert.deepEqual(m.poolGroups.map((g) => g.playerIds.length), [4, 5]);
     for (const [i, g] of m.poolGroups.entries()) {
       assert.notEqual(g.itemPool, previous[i]);
-      assert.equal(g.itemPool.cap(PACK), i === 0 ? 2 : 3);
+      assert.equal(g.itemPool.cap(PACK), i === 0 ? 2 : 3, 'four-person group x1, five-person group x1.25');
       assert.ok(g.playerIds.every((id) => m.itemPoolFor(id) === g.itemPool));
     }
     assert.equal(m.itemPool, m.poolGroups[0].itemPool);
