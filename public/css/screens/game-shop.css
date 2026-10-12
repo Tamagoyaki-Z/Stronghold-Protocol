@@ -238,3 +238,16 @@
 .shopbar.has-armed .scard:not(.is-armed):not(.scard--sold) { filter: brightness(.72); }
 .lvcard.is-armed { background: linear-gradient(180deg, #ffd65a, #e0a800); color: #1d1400; box-shadow: 0 0 0 2px #fff4c2, 0 0 .3rem rgba(255, 198, 0, .5); animation: pulse-gold 1.1s var(--ease-in-out) infinite; }
 .lvcard.is-armed .lvcard__label { letter-spacing: .12em; padding-left: .12em; }
+/* ---- 皮肤卡片 (docs/SKINS.md)：选了皮肤的干员，商店卡片与详情头图改用皮肤缩略图 ----------------
+   皮肤只带 180×180 头像（不含 ~2.5 MB 立绘），所以当作立绘图使用时要放大一点、往中间挪一点，
+   并沿自身底边与左右两侧渐隐（两层遮罩需 mask-composite: intersect，否则左右渐隐会被纵向遮罩吞掉）。
+   数值为使用者 2026-10-08 逐次调整后的最终值（透明度 0.85）。 */
+.scard__art.is-skin { width: 1.24rem; top: .06rem; right: -.06rem; object-fit: contain; object-position: top; opacity: .85;
+  -webkit-mask-image:
+    linear-gradient(180deg, #000 28%, transparent 82%),
+    linear-gradient(90deg, transparent 0%, #000 38%, #000 62%, transparent 100%);
+  mask-image:
+    linear-gradient(180deg, #000 28%, transparent 82%),
+    linear-gradient(90deg, transparent 0%, #000 38%, #000 62%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect; }

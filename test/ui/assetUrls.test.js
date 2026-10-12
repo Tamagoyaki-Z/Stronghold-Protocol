@@ -8,9 +8,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  uiUrl, chessAvatarUrl, chessPortraitUrl, skillIconUrl, profIconUrl, subProfIconUrl, bondIconUrl, bandIconUrl, itemIconUrl,
+  uiUrl, chessAvatarUrl, chessPortraitUrl, chessArtUrl, skillIconUrl, profIconUrl, subProfIconUrl, bondIconUrl, bandIconUrl, itemIconUrl,
   enemyIconUrl, tokenAvatarUrl, factionIconUrl, titleIconUrl, effectIconUrl,
 } from '../../public/js/ui/assetUrls.js';
+import { shopCardArtUrl, shopCardIsSkin } from '../../public/js/ui/shopBar.js';
+import { setSkin, clearSkin } from '../../public/js/ui/skins.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const load = (f) => JSON.parse(readFileSync(path.join(ROOT, 'data', f), 'utf8'));
@@ -80,6 +82,47 @@ describe('assetUrls', () => {
       }
     }
     assert.ok(n >= 170, `every skin has a listed avatar (checked ${n})`);
+  });
+  test('商店卡立绘: 选了皮肤用皮肤头像，未选 / 解析失败都回落原皮', () => {
+    // The in-match shop card draws its art through shopCardArtUrl — the very expression ChessCard's <Img> uses
+    // (ui/shopBar.js). Before this the card called chessPortraitUrl, so a chosen skin reached the board models and
+    // the 调配 roster but never the card.
+    const withSkin = Object.entries(m.chars).find(([, c]) => c.skins && Object.keys(c.skins).length);
+    assert.ok(withSkin, 'the manifest carries at least one skin');
+    const [charId, rec] = withSkin;
+    const skinId = Object.keys(rec.skins)[0];
+    const skin = rec.skins[skinId];
+    const chessRec = Object.values(chess).find((c) => c.charId === charId && !c.isGolden && !c.isDiy);
+    assert.ok(chessRec, `${charId} has a normal chess record`);
+
+    clearSkin(chessRec.chessId);
+    try {
+      // 未选: identical to the pre-skin baseline (the plain portrait, no is-skin frame)
+      assert.equal(shopCardArtUrl(m, chessRec), chessPortraitUrl(m, chessRec), 'no skin picked ⇒ the plain portrait');
+      assert.equal(shopCardIsSkin(m, chessRec), false, 'and no .is-skin frame');
+      // 选了: the skin's own avatar, which the manifest really lists
+      setSkin(chessRec.chessId, skinId);
+      assert.equal(shopCardArtUrl(m, chessRec), skin.avatar, 'the chosen skin wins');
+      assert.notEqual(shopCardArtUrl(m, chessRec), chessPortraitUrl(m, chessRec), 'and differs from the baseline');
+      assert.ok(inManifest(shopCardArtUrl(m, chessRec)));
+      assert.equal(shopCardIsSkin(m, chessRec), true, 'the card gets the .is-skin frame');
+      // a skinId that resolves to nothing must never break the card: same portrait as the baseline
+      setSkin(chessRec.chessId, 'no_such_skin');
+      assert.equal(shopCardArtUrl(m, chessRec), chessPortraitUrl(m, chessRec), 'an unresolvable skinId falls back');
+      assert.equal(shopCardIsSkin(m, chessRec), false, 'and shows no skin frame');
+      assert.equal(chessArtUrl(m, chessRec, 'no_such_skin'), chessPortraitUrl(m, chessRec), 'chessArtUrl too');
+      assert.equal(chessArtUrl(m, chessRec, null), chessPortraitUrl(m, chessRec), 'and with no skinId at all');
+      // the choice is stored per BASE chess: the elite card of the same operator wears it as well
+      const golden = Object.values(chess).find((c) => c.charId === charId && c.isGolden);
+      setSkin(chessRec.chessId, skinId);
+      if (golden) {
+        assert.equal(shopCardArtUrl(m, golden), skin.avatar, 'the elite card shows the same skin');
+        assert.equal(shopCardIsSkin(m, golden), true);
+      }
+    } finally {
+      clearSkin(chessRec.chessId);
+    }
+    assert.equal(shopCardArtUrl(m, chessRec), chessPortraitUrl(m, chessRec), 'cleared ⇒ back to the portrait');
   });
   test('bonds, bands, items, enemies, tokens, factions, titles, effects', () => {
     for (const id of Object.keys(load('bonds.json'))) assert.ok(bondIconUrl(m, id), id);

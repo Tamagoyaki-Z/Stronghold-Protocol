@@ -28,12 +28,22 @@ import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon, HexBadge, TierChip, Tooltip, MicroLabel } from './components.js';
 import { Img, BondGlyph, CoinGlyph, GIcon, RichText } from './gameComponents.js';
 import { priceTone, mergeProgress, mergeTarget, shopBlockReason, chessLoadout, offerHeader, briefingBondTip, ownStandIn, standInLoadout, standInLabel, standInTip, standInForText, ownDiyRecord, diyGetter } from './gameLogic.js';
-import { chessPortraitUrl, itemIconUrl, profIconUrl, uiUrl, skillIconUrl, skillRecordIconUrl, moduleTypeIconUrl } from './assetUrls.js';
+import { chessArtUrl, chessPortraitUrl, itemIconUrl, profIconUrl, uiUrl, skillIconUrl, skillRecordIconUrl, moduleTypeIconUrl } from './assetUrls.js';
+import { skinFor } from './skins.js';
 import { data } from '../data.js';
 import { hotkeyLabelOf } from './settings.js';
 import { t } from '../../../shared/i18n.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
+
+/**
+ * 商店卡的立绘：选了皮肤就用皮肤自带的 180×180 头像顶上（皮肤不含 ~2.5 MB 的 `skin/{portraitId}b.png` 立绘），
+ * 没选、或那个 skinId 在本机清单里解析不出来，都用回原皮立绘 —— 也就是加皮肤之前的 `chessPortraitUrl`。
+ * 皮肤选择按**基础棋子 id** 存（精锐卡用 baseId），与 server/lobby.js freezeSkins 和 render/app.js 同一口径。
+ */
+export const shopCardArtUrl = (m, chess) => chessArtUrl(m, chess, skinFor(chess?.baseId || chess?.chessId));
+/** 上面那张图是不是皮肤（`.scard__art.is-skin` 那个放大 + 两侧渐隐的框只给皮肤用）。 */
+export const shopCardIsSkin = (m, chess) => shopCardArtUrl(m, chess) !== chessPortraitUrl(m, chess);
 
 function PriceHex({ slot, free, poor = false }) {
   const tone = priceTone(slot);
@@ -103,7 +113,7 @@ export function ChessCard({ slot, idx, priv, frozen = false, reason = null, free
       disabled=${pending ? true : undefined} aria-busy=${pending ? 'true' : undefined}>
     <span class="scard__bg" aria-hidden="true"></span>
     <span class="scard__water" aria-hidden="true">${bonds[0] ? html`<${BondGlyph} bondId=${bonds[0]} />` : null}</span>
-    <${Img} src=${chessPortraitUrl(m, c)} class="scard__art" />
+    <${Img} src=${shopCardArtUrl(m, c)} class=${cx('scard__art', shopCardIsSkin(m, c) && 'is-skin')} />
     <span class="scard__top">
       <${TierChip} tier=${tier} size="md" />
       <${PriceHex} slot=${slot} free=${free} poor=${reason === t('资金不足')} />

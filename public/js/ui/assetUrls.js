@@ -74,11 +74,28 @@ export function chessPortraitUrl(m, chess) {
  * @param {string|null} [skinId] 已选皮肤的 id（char_102_texas@epoque#7）
  */
 export function chessArtUrl(m, chess, skinId = null) {
-  if (skinId) {
+  if (skinId && hasSkin(m, chess, skinId)) {
     const skinAvatar = chessAvatarUrl(m, chess, skinId);
     if (skinAvatar) return skinAvatar;
   }
   return chessPortraitUrl(m, chess);
+}
+
+/**
+ * Whether the manifest really carries this skin for this operator.
+ *
+ * `chessAvatarUrl` answers with *something* for an unknown skinId too (its `_2` branch hands back the E2 art of the
+ * operator), so a caller that wants "a skin, or exactly the plain portrait" — the shop card is one — has to ask the
+ * catalogue instead of the URL helper. The catalogue is keyed by the OPERATOR id, the same two keys chessAvatarUrl
+ * tries (the record's `assets.avatar`, then `charId`).
+ * @param {any} m manifest @param {any} chess chess.json record @param {string|null} skinId
+ */
+function hasSkin(m, chess, skinId) {
+  const chars = obj(obj(m)?.chars);
+  if (!chars || !skinId) return false;
+  const id = str(chess?.assets?.avatar) || str(chess?.charId);
+  const rec = (id ? obj(obj(chars[id])?.skins)?.[skinId] : null) || obj(obj(chars[str(chess?.charId)])?.skins)?.[skinId];
+  return !!str(rec?.avatar);
 }
 
 /** Skill icon of a chess record (manifest `skills[iconId]`, else the empty skill sprite). */
