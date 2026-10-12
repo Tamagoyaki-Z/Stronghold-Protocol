@@ -81,6 +81,25 @@ export class MatchPlatform {
     return res;
   }
 
+  /**
+   * room.skins during the match (docs/SKINS.md): replace a player's chosen operator skins.
+   * Unlike the loadout there is no phase gate — a skin is cosmetic and public to the teammates, so it may change
+   * in any phase; the lobby already checked the keys against the data (PlayerState.setSkins re-checks them).
+   * @param {string} playerId
+   * @param {Record<string, string> | null} skins
+   * @returns {{ ok: true } | { error: string, detail?: string }}
+   */
+  setSkins(playerId, skins) {
+    const ps = this.players.get(playerId);
+    if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
+    let res = OK;
+    this.guard(() => {
+      if (!ps.setSkins(skins)) { res = fail(ERR.BAD_TARGET, 'skins do not match the game data'); return; }
+      this.markPublic();
+    });
+    return res;
+  }
+
   onDisconnect(playerId) {
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || this.disposed) return;

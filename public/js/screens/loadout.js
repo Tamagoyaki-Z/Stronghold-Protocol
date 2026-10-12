@@ -28,12 +28,15 @@ import { Img, RichText, UnitThumb } from '../ui/gameComponents.js';
 import { chessAvatarUrl, chessPortraitUrl, subProfIconUrl, bondIconUrl, moduleTypeIconUrl } from '../ui/assetUrls.js';
 import { GarrisonBlock } from '../ui/detailPanel.js';
 import { data, useData, localAsset, DATA_FILES } from '../data.js';
+import { SkinSection } from '../ui/skinPicker.js';
+import { skinsStore, setSkins, clearSkin, skinFor } from '../ui/skins.js';
 import { useStore } from '../store.js';
 import { PHASE } from '../../../shared/constants.js';
 import {
   MODULE_NONE, PROF_ORDER, PROF_NAME, rosterOf, filterRoster, recordsOf, chessOptions, effectiveChoice, setChoice, resetChoice,
   changedCount, skillLabel, moduleBadge, attrRows, skillTags, quickSkillTags, traitLines, serializeExport, parseImport, LOADOUT_IMPORT_MAX_BYTES,
   opsOf, setOps, resetOps, moduleRecord,
+  mergeSkins,
 } from '../ui/loadoutModel.js';
 import { loadoutStore, openLoadout, closeLoadout, setEntries, setOpsMap, applyLoadoutEntries, setNotOwned, applyOwnershipImport, setDiyPicks, applyDiyImport } from '../ui/loadoutSync.js';
 import { OperatorVoice } from '../ui/operatorVoice.js';
@@ -207,7 +210,7 @@ export function RosterRow({ m, chess, golden, entries, ops = {}, selected, onPic
       class=${cx('lo-card', `lo-card--t${chess.tier}`, selected && 'is-sel', changed && 'is-changed', notOwned && 'is-standin')}>
     <button type="button" class="lo-card__pick" aria-pressed=${selected ? 'true' : 'false'} title=${chess.name} onClick=${() => onPick(chess.chessId)}>
       <span class="lo-card__art">
-        <${Img} src=${chessAvatarUrl(m, chess)} fallback=${html`<span class="lo-card__glyph">${[...(chess.name || '?')][0]}</span>`} />
+        <${Img} src=${chessAvatarUrl(m, chess, skinFor(chess.chessId))} fallback=${html`<span class="lo-card__glyph">${[...(chess.name || '?')][0]}</span>`} />
         <${TierChip} tier=${chess.tier} size="sm" class="lo-card__tier" />
       </span>
       <span class="lo-card__id">
@@ -310,6 +313,10 @@ function Detail({ m, chess, golden, entries, ops = {}, onChange, onOps, onReset,
   const [statLevel, setStatLevel] = useState('elite'); // 局内数值: the 精锐 shows the chosen module's effect
   const setLevel = onLevel;
   const bodyRef = useRef(null);
+  // 干员皮肤 (docs/SKINS.md): the header art reads the CHOSEN skin (`skinFor`), which lives in its own store — without
+  // this subscription the pane only redrew when something ELSE re-rendered it (switching operator), so 皮肤A → 皮肤B
+  // left the previous skin's picture on screen while the choice itself had already been saved.
+  useStore((s) => s.entries, Object.is, skinsStore);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0; }, [chess?.chessId]);
   if (!chess) return html`<aside class="lo-detail lo-detail--empty"><p class="t-dim">${t('没有符合条件的干员')}</p></aside>`;
   const opt = chessOptions(chess, golden);
@@ -320,7 +327,7 @@ function Detail({ m, chess, golden, entries, ops = {}, onChange, onOps, onReset,
   return html`<aside class="lo-detail" aria-label=${t('{name} 调配', { name: chess.name })}>
     <div class="lo-dhead">
       <div class=${cx('lo-dhead__art', `lo-dhead__art--t${chess.tier}`)}>
-        <${Img} src=${chessPortraitUrl(m, golden || chess)} fallback=${html`<${UnitThumb} kind="chess" id=${chess.chessId} size="lg" />`} />
+        <${Img} src=${skinFor(chess.chessId) ? chessAvatarUrl(m, chess, skinFor(chess.chessId)) : chessPortraitUrl(m, golden || chess)} fallback=${html`<${UnitThumb} kind="chess" id=${chess.chessId} size="lg" />`} />
       </div>
       <div class="lo-dhead__info">
         <div class="lo-dhead__chips"><${TierChip} tier=${chess.tier} size="md" />
@@ -373,6 +380,7 @@ function Detail({ m, chess, golden, entries, ops = {}, onChange, onOps, onReset,
         </div>
         ${modOpt ? html`<${ModuleInfo} m=${m} golden=${golden} opt=${modOpt} potential=${opsOf(ops, chess.charId).potential} />` : null}
       </section>` : null}
+      ${html`<${SkinSection} chess=${chess} locked=${locked} />`}
       ${notOwned ? html`<p class="lo-locknote lo-locknote--standin" data-testid="loadout-standin-note"><${Icon} name="info" />${standInName(chess) ? t('干员持有中标记为未持有：此棋子由替补干员 {name} 上场，技能与模组固定（补位干员技能不可更改）；这里的调配在改回「持有」后生效', { name: standInName(chess) })
         : t('干员持有中标记为未持有：此棋子由替补干员上场，技能与模组固定（补位干员技能不可更改）；这里的调配在改回「持有」后生效')}</p>` : null}
       ${locked ? html`<p class="lo-locknote"><${Icon} name="info" />${t('本局的调配已锁定，修改将在下一局生效')}</p>` : null}
@@ -464,6 +472,10 @@ export function DataMissing({ files }) {
 /** The overlay screen. */
 function LoadoutScreen({ st }) {
   const ready = useData('chess', 'bonds', 'assets', 'local', 'backups', 'garrisons', 'effects');
+  // 干员皮肤 (docs/SKINS.md): the roster thumbnails and the detail header draw the CHOSEN skin, which lives in the
+  // skins store — subscribing here re-renders both the moment a skin changes (皮肤A → 皮肤B used to keep 皮肤A's
+  // picture on screen until an unrelated re-render — switching operator — came along).
+  useStore((s) => s.entries, Object.is, skinsStore);
   const phase = useStore((s) => s.match?.public?.phase || null);
   const inMatch = useStore((s) => !!s.room?.inMatch);
   // co-op briefing (INFO_CHECK, 25 s): the overlay covers the briefing's own countdown, so it shows the time left — the
@@ -482,6 +494,8 @@ function LoadoutScreen({ st }) {
   const selId = st.sel && roster.some((c) => c.chessId === st.sel) ? st.sel : list[0]?.chessId || roster[0]?.chessId || null;
   const { base, golden } = selId ? recordsOf(selId, getChess) : { base: null, golden: null };
   const nChanged = changedCount(st.entries, getChess, st.ops, roster);
+  /** 已选皮肤的干员数 (docs/SKINS.md) — 只改了皮肤时「导出 / 全部恢复默认」也要可用 */
+  const nSkins = useStore((s) => Object.keys(s.entries).length, Object.is, skinsStore);
   const locked = (inMatch && phase && phase !== PHASE.INFO_CHECK && phase !== PHASE.LOBBY) || st.sync === 'locked';
   const gridRef = useRef(null);
   const fileRef = useRef(null);                            // hidden <input type=file> of the 导入 dialog
@@ -524,10 +538,15 @@ function LoadoutScreen({ st }) {
     if (!base) return;
     setOpsMap(resetOps(loadoutStore.get().ops, base.charId));
     setEntries(resetChoice(loadoutStore.get().entries, base.chessId));
+    if (skinsStore.get().entries[base.chessId]) clearSkin(base.chessId); // 皮肤一并回默认 (docs/SKINS.md)
   };
   const resetAll = async () => {
-    if (!nChanged) return;
-    const ok = await confirmDialog({ title: t('全部恢复默认'), text: t('将 {nChanged} 名干员的技能、模组、潜能与练度恢复为默认配置？', { nChanged }), okText: t('恢复默认'), danger: true });
+    if (!nChanged && !nSkins) return;
+    const ok = await confirmDialog({
+      title: t('全部恢复默认'),
+      text: t('将 {nChanged} 名干员的技能、模组、潜能与练度恢复为默认配置？', { nChanged }),
+      okText: t('恢复默认'), danger: true,
+    });
     if (!ok) return;
     // the roster's operators only: a 自选 pick's settings belong to the 自选编队 tab
     const rosterChars = new Set(roster.map((c) => c.charId));
@@ -535,6 +554,7 @@ function LoadoutScreen({ st }) {
     for (const [id, e] of Object.entries(loadoutStore.get().ops || {})) if (!rosterChars.has(id)) keep[id] = e;
     setOpsMap(keep);
     setEntries({});
+    if (nSkins) setSkins({});
   };
 
   // 导出 / 导入 the loadout (or, on the 干员持有 tab, the not-owned list) as the versioned payload (a downloaded file,
@@ -545,7 +565,7 @@ function LoadoutScreen({ st }) {
   const openExport = () => setIo(tab === 'ownership'
     ? { mode: 'export', kind: 'ownership', text: serializeOwnership(loadoutStore.get().notOwned) }
     : tab === 'diy' ? { mode: 'export', kind: 'diy', text: serializeDiy(loadoutStore.get().diy) }
-      : { mode: 'export', kind: 'loadout', text: serializeExport(loadoutStore.get().entries, { ops: loadoutStore.get().ops }) });
+      : { mode: 'export', kind: 'loadout', text: serializeExport(loadoutStore.get().entries, { ops: loadoutStore.get().ops, skins: skinsStore.get().entries }) });
   const openImport = () => setIo({ mode: 'import', kind: tab, text: '' });
   const ioCopy = async () => {
     const ok = await copyText(ioText);
@@ -591,12 +611,20 @@ function LoadoutScreen({ st }) {
     const r = applyLoadoutEntries(res.entries, getChess, res.ops ? { ops: res.ops, isOperator: (id) => opIds.has(id) } : {});
     const { applied, dropped } = r;
     const nOps = r.ops ?? 0;
+    // 干员皮肤 (docs/SKINS.md): a payload may carry skins only — applying them is already a successful import
+    let skinsApplied = 0;
+    if (res.skins && Object.keys(res.skins).length > 0) {
+      setSkins(mergeSkins(skinsStore.get().entries, res.skins));
+      skinsApplied = Object.keys(res.skins).length;
+    }
     // nothing survived sanitising (unknown chess, or every choice already the default): keep the current loadout
-    if (!applied && !nOps) { toast(t('导入失败：这份数据在当前版本没有可用的调配，未做任何改动'), 'error'); return; }
+    if (!applied && !nOps && !skinsApplied) { toast(t('导入失败：这份数据在当前版本没有可用的调配，未做任何改动'), 'error'); return; }
     setIo(null);
-    toast(!applied ? t('已导入 {n} 名干员的潜能与练度', { n: nOps })
+    // 皮肤随导入一并生效（只导皮肤时 applied / nOps 都是 0，上面已放过）
+    const skinNote = skinsApplied ? t('（含 {n} 套皮肤）', { n: skinsApplied }) : '';
+    toast((!applied ? t('已导入 {n} 名干员的潜能与练度', { n: nOps })
       : dropped ? t('已导入 {applied} 名干员（另有 {dropped} 项未导入）', { applied, dropped })
-        : t('已导入 {applied} 名干员的调配', { applied }), dropped ? 'warn' : 'success');
+        : t('已导入 {applied} 名干员的调配', { applied })) + skinNote, dropped ? 'warn' : 'success');
   };
 
   // Esc closes; ←/→ browse the filtered roster (not while typing in the search field)
@@ -675,9 +703,9 @@ function LoadoutScreen({ st }) {
         ${inMatch && hasDeadline(infoDeadline) ? html`<${Countdown} deadline=${infoDeadline} size="sm" gauge=${false} label=${t('调配截止')} class="lo-deadline" />` : null}
         ${syncText ? html`<span class=${cx('lo-sync', syncCls)} role="status">${t(syncText)}</span>` : null}
         <span class="lo-count">${t('已调整')} <b class="num">${nChanged}</b><span class="num t-dim">/${roster.length}</span></span>
-        <${Button} variant="ghost" size="sm" data-testid="loadout-export" disabled=${!nChanged} onClick=${openExport} title=${t('导出当前调配（可复制或下载）')}>${t('导出')}<//>
+        <${Button} variant="ghost" size="sm" data-testid="loadout-export" disabled=${!nChanged && !nSkins} onClick=${openExport} title=${t('导出当前调配（可复制或下载）')}>${t('导出')}<//>
         <${Button} variant="ghost" size="sm" data-testid="loadout-import" disabled=${!ready} onClick=${openImport} title=${t('导入调配（粘贴或选择文件）')}>${t('导入')}<//>
-        <${Button} variant="secondary" size="sm" icon="refresh" disabled=${!nChanged} onClick=${resetAll}>${t('全部恢复默认')}<//>
+        <${Button} variant="secondary" size="sm" icon="refresh" disabled=${!nChanged && !nSkins} onClick=${resetAll}>${t('全部恢复默认')}<//>
       </div>`}
     </header>
     ${tab === 'diy'

@@ -115,6 +115,7 @@ export class MatchViews {
         fieldId: this.fieldOf(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
+        ...(Object.keys(ps.skins).length ? { skins: ps.skins } : {}),
         // the LP this round's own battle will cost at settlement so far (COMBAT / 联防 only, omitted when 0)
         ...this._pendingLpView(ps),
       })),
@@ -311,6 +312,7 @@ export class MatchViews {
         area: 'board',
         name: rec ? rec.name : piece.id, tier: rec && Number.isInteger(rec.tier) ? rec.tier : 1, golden: !!(rec && rec.isGolden),
         spine: assets.spine || (rec && rec.charId) || piece.id, avatar: assets.avatar || (rec && rec.charId) || piece.id,
+        skin: piece.kind === 'chess' ? (ps.skins?.[chess?.baseId || piece.id] || ps.skins?.[piece.id]) : undefined,
         x: c, y: r, dir: pieceDir(piece), facing: pieceDir(piece) === 'LEFT' ? -1 : 1, maxHp: rec && rec.stats && Number.isFinite(rec.stats.maxHp) ? rec.stats.maxHp : 1,
         skillIndex: lo && Number.isInteger(lo.skillIndex) ? lo.skillIndex : undefined,
         moduleId: lo && typeof lo.moduleId === 'string' ? lo.moduleId : undefined,

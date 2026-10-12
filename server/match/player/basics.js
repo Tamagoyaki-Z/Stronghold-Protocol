@@ -126,6 +126,27 @@ export class PlayerBasics {
   }
 
   /**
+   * 干员皮肤 (docs/SKINS.md): replace this player's skin choices. `{ [chessId]: skinId }`.
+   * Bots keep the default models (same refusal as `setLoadout`).
+   * @param {Record<string, string>|null} skins
+   * @returns {boolean} whether anything was accepted
+   */
+  setSkins(skins) {
+    if (this.isBot) return false;
+    const out = {};
+    if (skins && typeof skins === 'object' && !Array.isArray(skins)) {
+      for (const [id, skinId] of Object.entries(skins)) {
+        if (typeof skinId !== 'string' || !skinId) continue;
+        const rec = this.gd.chess(id);
+        if (!rec || rec.isGolden || rec.visible === false || rec.isHidden || rec.isDiy || (rec.baseId && rec.baseId !== id)) continue;
+        out[id] = skinId;
+      }
+    }
+    this.skins = Object.freeze(out);
+    return Object.keys(out).length > 0;
+  }
+
+  /**
    * The skill index / module a chess record fights with under this player's loadout (DESIGN §16) — for a chess this
    * player fields as its stand-in (0.2.0 补位) the stand-in's backup selection, whatever the loadout says; for a slotted
    * 自选 slot (0.2.0, player/diy.js) its pick's skill and module (the composed record's defaults — the loadout never names
