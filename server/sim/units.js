@@ -39,6 +39,7 @@ export class Unit {
     this.ownerId = init.ownerId ?? null;  // playerId (enemies: field owner)
     this.uid = init.uid ?? null;          // match piece uid (ops/tokens from the board)
     this.ownerUnit = init.ownerUnit ?? null; // summoner (tokens)
+    this.skin = init.skin ?? null;        // chosen skinId (干员皮肤, docs/SKINS.md)
     this.x = init.x ?? 0;
     this.y = init.y ?? 0;
     this.tileR = init.tileR ?? Math.round(this.y);

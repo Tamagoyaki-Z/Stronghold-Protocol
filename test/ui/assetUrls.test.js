@@ -43,6 +43,44 @@ describe('assetUrls', () => {
     const golden = Object.values(chess).find((c) => c.isGolden && m.chars[c.charId]?.avatarE2);
     assert.equal(chessAvatarUrl(m, golden), m.chars[golden.charId].avatarE2, 'golden uses E2 art');
   });
+
+  test('干员皮肤: a chosen skin swaps the avatar, and only that chess is affected', () => {
+    // docs/SKINS.md: the skin catalogue lives under the OPERATOR id, while the choice is keyed by CHESS id. Before this
+    // the 干员调配 roster, the shop cards and the fallback field kept drawing the default portrait after a skin was
+    // picked — the choice reached the board models but never the operator's picture.
+    const withSkin = Object.entries(m.chars).find(([, c]) => c.skins && Object.keys(c.skins).length);
+    assert.ok(withSkin, 'the manifest carries at least one skin');
+    const [charId, rec] = withSkin;
+    const skinId = Object.keys(rec.skins)[0];
+    const skin = rec.skins[skinId];
+    assert.ok(skin.avatar, 'the skin has its own avatar');
+    const chessRec = Object.values(chess).find((c) => c.charId === charId && !c.isGolden && !c.isDiy);
+    assert.ok(chessRec, `${charId} has a normal chess record`);
+
+    assert.equal(chessAvatarUrl(m, chessRec, skinId), skin.avatar, 'the skin art wins');
+    assert.notEqual(chessAvatarUrl(m, chessRec, skinId), chessAvatarUrl(m, chessRec), 'and differs from the default');
+    assert.ok(inManifest(chessAvatarUrl(m, chessRec, skinId)));
+
+    // unknown / absent skinId falls back to the operator's own art (never a broken URL)
+    assert.equal(chessAvatarUrl(m, chessRec, 'no_such_skin'), chessAvatarUrl(m, chessRec));
+    assert.equal(chessAvatarUrl(m, chessRec, null), chessAvatarUrl(m, chessRec));
+    assert.equal(chessAvatarUrl(m, chessRec), chessAvatarUrl(m, chessRec));
+    // the golden record of the SAME operator resolves the skin too (the detail head passes the base record)
+    const golden = Object.values(chess).find((c) => c.charId === charId && c.isGolden);
+    if (golden) assert.equal(chessAvatarUrl(m, golden, skinId), skin.avatar, 'golden keeps the chosen skin');
+    // every real skin of every operator resolves to a file the manifest lists
+    let n = 0;
+    for (const [id, r] of Object.entries(m.chars)) {
+      for (const sid of Object.keys(r.skins || {})) {
+        const c = Object.values(chess).find((x) => x.charId === id && !x.isGolden && !x.isDiy);
+        if (!c) continue;
+        const u = chessAvatarUrl(m, c, sid);
+        assert.ok(u && inManifest(u), `${id} ${sid} → ${u}`);
+        n++;
+      }
+    }
+    assert.ok(n >= 170, `every skin has a listed avatar (checked ${n})`);
+  });
   test('bonds, bands, items, enemies, tokens, factions, titles, effects', () => {
     for (const id of Object.keys(load('bonds.json'))) assert.ok(bondIconUrl(m, id), id);
     for (const id of Object.keys(load('bands.json'))) assert.ok(bandIconUrl(m, id), id);
