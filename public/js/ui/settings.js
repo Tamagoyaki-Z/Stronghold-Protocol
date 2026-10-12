@@ -95,6 +95,11 @@ function Toggle({ label, micro, value, onChange, 'data-testid': testid }) {
 
 const QUALITY = [['high', N_('高')], ['medium', N_('中')], ['low', N_('低')]];
 /**
+ * 分辨率 (ui/gameLogic/settings.js RESOLUTION_MODES): a pixel-ratio CAP for the field canvas, split out of 画质 so a
+ * phone whose operator models read blurry can ask for more pixels without also paying for the 3D board's fill.
+ */
+const RESOLUTION = [['auto', N_('自动')], ['720p', N_('720p')], ['1080p', N_('1080p')], ['1440p', N_('1440p')], ['native', N_('原生')]];
+/**
  * 文字大小: one step of TEXT_SIZES (ui/gameLogic/settings.js) with its label — 小 is the design's own sizes, the others
  * raise the text root `--t` (css/theme.css) and with it every readable font-size; the board and the HUD's boxes stay.
  */
@@ -283,6 +288,15 @@ export function SettingsModal({ open, onClose }) {
         </div>
       </div>
       <p class="set-hint set-textsize-note">${t('调整界面文字大小，棋盘保持原比例。')}</p>
+
+      <div class="set-row" data-testid="resolution-row">
+        <span class="set-row__label">${t('分辨率')}<${MicroLabel}>RESOLUTION<//></span>
+        <div class="set-seg" role="radiogroup" aria-label=${t('分辨率')}>
+          ${RESOLUTION.map(([id, label]) => html`<button key=${id} type="button" role="radio" aria-checked=${s.resolution === id ? 'true' : 'false'}
+            data-resolution=${id} class=${s.resolution === id ? 'is-on' : ''} onClick=${() => updateSettings({ resolution: id })}>${t(label)}</button>`)}
+        </div>
+      </div>
+      <p class="set-hint">${t('分辨率：自动跟随画质。觉得干员偏糊就调高；手机发热或掉帧就调低。')}</p>
       <${Toggle} label=${t('性能模式')} micro="PERFORMANCE MODE" value=${s.performanceMode}
         data-testid="performance-mode" onChange=${(v) => updateSettings({ performanceMode: v })} />
       <p class="set-hint set-perf-note">${t('关闭 3D 棋盘与高开销特效，降低卡顿（画面会变朴素）。')}</p>
