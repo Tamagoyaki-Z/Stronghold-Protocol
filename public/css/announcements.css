@@ -5,6 +5,7 @@
   width: min(11.4rem, 96vw);
   height: min(7.8rem, 88vh);
   max-height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px));
+  max-height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px));
   min-height: 0;
 }
 .announcements > .modal__head { flex: none; padding: .2rem .28rem .18rem; }
@@ -63,9 +64,13 @@
 .announcement-markdown__inline-code { padding: .02rem .05rem; color: var(--mint-400); background: var(--bg-0); font-family: var(--font-mono); font-size: .92em; }
 .announcement-markdown__notice { padding: .12rem .16rem; border: 1px solid var(--line); color: var(--text-lo); }
 
-/* Small screens show one scroll region at a time. Controls remain visible above and below the reader. */
+/* Small screens show one scroll region at a time. Controls remain visible above and below the reader.
+   The box height stays inside the .modal container's own padding (.3rem top + .3rem bottom): at .35rem the frame was
+   a hair taller than the padded area on a phone, so the footer (with 关闭) was pushed off the bottom edge — the
+   player then saw a full-screen announcement they could not dismiss. `--sa-*` are subtracted on top of that. */
 @media (max-width: 900px) {
-  .modal__box.announcements { width: 96vw; height: calc(100vh - .35rem - var(--sa-t, 0px) - var(--sa-b, 0px)); max-height: calc(100vh - .35rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
+  .modal__box.announcements { width: 96vw; height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); max-height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
+  .modal__box.announcements { width: 96vw; height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); max-height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
   .announcements > .modal__head { padding: .14rem .2rem .1rem; }
   .announcements > .modal__actions { padding: .12rem .18rem; gap: .12rem; flex-wrap: wrap; }
   .announcements__layout { display: flex; flex-direction: column; }
@@ -79,7 +84,10 @@
   .announcements__footer-buttons { margin-left: auto; }
 }
 @media (max-height: 480px) {
-  .modal__box.announcements { height: 94vh; max-height: 94vh; }
+  /* the same ".6rem = the container's own padding" rule as above: 94vh could exceed the padded area on a short
+     landscape phone, which put 关闭 below the bottom edge. */
+  .modal__box.announcements { height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); max-height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
+  .modal__box.announcements { height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); max-height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
   .announcements > .modal__head { padding-top: .1rem; padding-bottom: .08rem; }
   .announcements > .modal__head .micro { display: none; }
   .announcements > .modal__actions { padding-top: .09rem; padding-bottom: .09rem; }
@@ -90,6 +98,11 @@
 .urgent-announcement-layer { position: fixed; inset: 0; z-index: calc(var(--z-modal) + 5); pointer-events: none; }
 .urgent-announcement-layer > .modal { pointer-events: auto; }
 .modal__box.urgent-announcement { width: min(8.6rem, 96vw); height: min(7rem, 88vh); min-height: 0; border-color: var(--amber); }
+/* the urgent notice is never dismissible-by-nobody: its own box stays inside the container padding, so its 关闭
+   (also the data-autofocus target and what Esc calls) can never end up below the screen edge; Esc and a backdrop
+   press close it as well (ui/urgentAnnouncements.js installUrgentAnnouncementFocus). */
+.modal__box.urgent-announcement { max-height: calc(100vh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
+.modal__box.urgent-announcement { max-height: calc(100dvh - .6rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
 .urgent-announcement > .modal__head { flex: none; padding: .2rem .28rem .16rem; }
 .urgent-announcement > .modal__body { flex: 1; min-height: 0; overflow: hidden; padding: 0; }
 .urgent-announcement > .modal__actions { align-items: center; justify-content: space-between; gap: .15rem; padding: .15rem .25rem; }
@@ -103,6 +116,7 @@
 .urgent-announcement__pending { color: var(--text-lo); font-size: max(calc(.14 * var(--t)), 12px); line-height: 1.5; }
 @media (max-width: 900px) {
   .modal__box.urgent-announcement { width: 96vw; height: 92vh; max-height: calc(100vh - .35rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
+  .modal__box.urgent-announcement { width: 96vw; height: 92vh; max-height: calc(100dvh - .35rem - var(--sa-t, 0px) - var(--sa-b, 0px)); }
   .urgent-announcement > .modal__head { padding: .14rem .2rem .1rem; }
   .urgent-announcement__article-head { padding: .12rem .2rem; }
   .urgent-announcement__running { padding: .09rem .2rem; }
@@ -163,6 +177,15 @@
     min-height: 0;
     overflow: auto;
     padding: 6px 12px;
+    overscroll-behavior: contain;
+  }
+}
+
+/* 小屏兜底：若弹窗仍高过可视区，让整框可滚，保证底部「关闭」永远够得着 */
+@media (max-width: 900px) {
+  .modal__box.announcements, .modal__box.urgent-announcement {
+    max-height: calc(100dvh - .35rem - var(--sa-t, 0px) - var(--sa-b, 0px));
+    overflow-y: auto;
     overscroll-behavior: contain;
   }
 }
