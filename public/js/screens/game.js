@@ -181,7 +181,8 @@ function MatchScreen() {
   const hostRef = useRef(null);
   const barRef = useRef(null);
   const hudElRef = useRef(null);                         // .gm__hud (inside the safe-area insets: the panels' frame)
-  const { view, kind: viewKind } = useFieldView(hostRef);
+  // 地图主题 (board3d/theme.js): the view bakes its world textures at creation, so it is told the stage up front.
+  const { view, kind: viewKind } = useFieldView(hostRef, pub?.stageId || null);
 
   const [watching, setWatching] = useState(null);        // fieldId the player chose to watch (null = home)
   const [watchWho, setWatchWho] = useState(null);        // { fieldId, playerId }: the teammate picked with 前往查看

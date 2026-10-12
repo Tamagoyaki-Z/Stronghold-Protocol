@@ -212,10 +212,10 @@ export function seedAssets(store) {
  * @param {{ signal?: AbortSignal }} [options] Cancels a pending mount without creating a fallback.
  * @returns {Promise<ReturnType<typeof guardView>>}
  */
-export async function mountFieldView(host, { signal } = {}) {
+export async function mountFieldView(host, { signal, stageId = null } = {}) {
   checkActive(signal);
   const pref = renderPref();
-  const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), padding: hudPadding, hud: hudBands };
+  const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), stageId, padding: hudPadding, hud: hudBands };
   if (pref !== 'fallback') {
     const controller = new AbortController();
     const onAbort = () => controller.abort(abortError(signal));
@@ -263,9 +263,14 @@ export async function mountFieldView(host, { signal } = {}) {
 
 /**
  * Preact hook: mount a field view into `hostRef` once; returns { view, kind } (view null while loading).
+ *
+ * `stageId` (the match's own stage, `m.public.stageId`) is read ONCE, when the view is created: the board's world
+ * textures are baked into the scene at creation, so the theme must be chosen then (render/board3d/theme.js). A stage
+ * that arrives later — or not at all — draws the default world, which is what every match did before themes existed.
  * @param {{ current: HTMLElement|null }} hostRef
+ * @param {string|null} [stageId]
  */
-export function useFieldView(hostRef) {
+export function useFieldView(hostRef, stageId = null) {
   const [state, setState] = useState({ view: null, kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const retries = useRef(0);
@@ -276,7 +281,7 @@ export function useFieldView(hostRef) {
     if (!host) return undefined;
     setState({ view: null, kind: 'loading' });
     const controller = new AbortController();
-    mountFieldView(host, { signal: controller.signal }).then((view) => {
+    mountFieldView(host, { signal: controller.signal, stageId }).then((view) => {
       if (dead) { view.destroy(); return; }
       viewRef.current = view;
       if (view.kind === 'engine') retries.current = 0;

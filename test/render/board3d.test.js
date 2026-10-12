@@ -15,7 +15,7 @@ import {
   buildBoard, classifyStage, heightOf, AREAS, areaFor, unionAreas, objToBoard, boxProjectUV, tube, Geom, uvAt, ROWS, COLS,
 } from '../../public/js/render/board3d/layout.js';
 import { BoardScene, gatePulse, DIR_TURNS, boxData, LIGHTING } from '../../public/js/render/board3d/scene.js';
-import { loadBoardPack, loadThree, resetBoardPack, PACK_IMAGES } from '../../public/js/render/board3d/load.js';
+import { loadBoardPack, loadThree, resetBoardPack, PACK_IMAGES, worldSlots, groupImages, DEFAULT_BOARD_GROUP } from '../../public/js/render/board3d/load.js';
 import { parseStage } from '../../public/js/render/tiles.js';
 import { TILE_H } from '../../public/js/render/style.js';
 import { presetCamera, syncThreeCamera } from '../../public/js/render/projection.js';
@@ -358,6 +358,77 @@ describe('asset pack loader (fake store)', () => {
       assert.equal(await loadBoardPack(store), null, 'no diffuse atlas → no 3D board');
       resetBoardPack();
       assert.equal(await loadBoardPack(null), null);
+    } finally {
+      globalThis.fetch = realFetch;
+      resetBoardPack();
+    }
+  });
+});
+
+// Board themes (2026-10-08): a scenario's recolour is a manifest GROUP with its own `materials.json`, and its files are
+// named differently from the default's. The sand set (`map/autochesssand`, 沙尘暴/土石结构) sits in the local dump
+// unreferenced by any code, so the board always drew the default art whatever map was played.
+describe('board3d · board themes', () => {
+  const local = path.join(ROOT, 'public', 'assets', 'local');
+  const mats = (g) => JSON.parse(readFileSync(path.join(local, g, 'materials.json'), 'utf8'));
+  const DEF = mats('map/autochess');
+  const SAND = mats('map/autochesssand');
+
+  test('the default group keeps EXACTLY the names the renderer has always loaded', () => {
+    // materials.json lists TX_autochessi_N / _M for the normal and metallic slots, but the renderer deliberately uses
+    // the packed _N_rgb / _M_rough. A materials-driven rewrite must not silently swap them.
+    const g = groupImages(DEF, DEFAULT_BOARD_GROUP);
+    assert.deepEqual(g.D, PACK_IMAGES.D);
+    assert.deepEqual(g.N, PACK_IMAGES.N);
+    assert.deepEqual(g.M, PACK_IMAGES.R);
+    assert.deepEqual(g.E, PACK_IMAGES.E);
+    assert.notEqual(PACK_IMAGES.N[1], worldSlots(DEF).N, 'the dump disagrees with the packed name — that is the point');
+    // the scene-wide slots live outside the world group and must survive untouched
+    for (const k of ['wind', 'gate', 'waterN', 'caustics', 'noise', 'common', 'commonE', 'BG']) {
+      assert.deepEqual(g[k], PACK_IMAGES[k], k);
+    }
+  });
+
+  test('the sand group resolves to its own files, in its own group', () => {
+    const s = groupImages(SAND, 'map/autochesssand');
+    assert.deepEqual(s.D, ['map/autochesssand', 'TX_AutochessSand_A']);
+    assert.deepEqual(s.N, ['map/autochesssand', 'TX_AutochessSand_N']);
+    assert.deepEqual(s.M, ['map/autochesssand', 'TX_AutochessSand_M']);
+    // 沙地 has no _EmissionMap: only then may the default's take over, and it must stay in ITS group
+    assert.ok(!worldSlots(SAND).E, 'the sand dump carries no emission map');
+    assert.deepEqual(s.E, PACK_IMAGES.E);
+    // every resolved world name is a real entry of its own manifest group
+    const lm = JSON.parse(readFileSync(path.join(ROOT, 'data', 'local-assets.json'), 'utf8'));
+    for (const k of ['D', 'N', 'M']) {
+      assert.ok(lm.groups[s[k][0]]?.[s[k][1]], `${k} ${s[k][1]} is in the manifest`);
+    }
+  });
+
+  test('a theme without a usable dump degrades to the fixed names, not to a missing board', () => {
+    assert.equal(worldSlots(null), null);
+    assert.equal(worldSlots({}), null);
+    assert.equal(worldSlots({ MT_x: {} }), null);
+    assert.equal(worldSlots({ MT_x: { textures: {} } }), null);
+    const fallback = groupImages(null, 'map/autochesssand');
+    assert.deepEqual(fallback.D, ['map/autochesssand', PACK_IMAGES.D[1]]);
+    assert.equal(DEFAULT_BOARD_GROUP, 'map/autochess');
+  });
+
+  test('the loader defaults to the default group and caches per group', async () => {
+    // a fake store that only knows the default group
+    const store = {
+      local: async () => ({ groups: { [DEFAULT_BOARD_GROUP]: {} } }),
+      localUrl: (g, n) => (g === DEFAULT_BOARD_GROUP && n === PACK_IMAGES.D[1] ? '/x/D.png' : null),
+      image: async () => ({ width: 4, height: 4 }),
+    };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => null, text: async () => '' });
+    try {
+      resetBoardPack();
+      const a = await loadBoardPack(store);
+      assert.ok(a, 'the default group still loads');
+      assert.equal(a.group, DEFAULT_BOARD_GROUP);
+      assert.equal(await loadBoardPack(store), a, 'the same group is cached');
     } finally {
       globalThis.fetch = realFetch;
       resetBoardPack();
