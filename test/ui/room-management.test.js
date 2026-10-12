@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Button } from '../../public/js/ui/components.js';
 import {
   roomFacts, SeatCard, MatchmakingControl, roomShowsGroups, poolGroups, seatGroup, seatGroupOf, groupLetter, groupColor,
-  GROUP_COLORS,
+  GROUP_COLORS, skinAvatarFor,
 } from '../../public/js/screens/room.js';
 
 function* walk(node) {
@@ -207,4 +207,34 @@ test('SeatCard paints the group badge, the tint and the 3px edge — and nothing
   assert.equal(badge(plain).length, 0);
   assert.equal(/ is-grouped/.test(plain.props.class), false);
   assert.equal(/--group-color/.test(plain.props.style), false);
+});
+
+// ---- ③c 候室队友皮肤 ------------------------------------------------------------------------------------------------
+
+test('skinAvatarFor: the seat card draws the chosen skin, everything else falls back to the operator art', () => {
+  // the manifest shape chessAvatarUrl reads: chars[operator].skins[skinId].avatar
+  const M = { chars: { c1: { avatar: 'a/c1.png', skins: { s1: { avatar: 'a/c1_s1.png' } } } } };
+  const CHESS = { chess_char_9_01_a: { charId: 'c1' } };
+  const lookup = (group, id) => (group === 'chess' ? CHESS[id] || null : null);
+
+  assert.equal(skinAvatarFor({ skins: { chess_char_9_01_a: 's1' } }, M, lookup), 'a/c1_s1.png', 'the chosen skin');
+  assert.equal(skinAvatarFor({ skins: { chess_char_9_01_a: 'nope' } }, M, lookup), 'a/c1.png',
+    'an unknown skin id falls back to the operator\'s own avatar (auto-fallback since ①)');
+  assert.equal(skinAvatarFor({ skins: { chess_char_nodes: 's1' } }, M, lookup), null,
+    'a key the data does not know is skipped — and nothing is drawn for it');
+  // the representative is deterministic: the first RESOLVABLE key in sorted order (a waiting room has no chosen operator)
+  assert.equal(skinAvatarFor({ skins: { zz: 's1', chess_char_9_01_a: 's1' } }, M, lookup), 'a/c1_s1.png');
+  assert.equal(skinAvatarFor({ skins: { aa: 's1', chess_char_9_01_a: 's1' } }, M, lookup), 'a/c1_s1.png');
+  // nothing to draw: no skins / no manifest / no seat ⇒ the seat card keeps its own glyph (never a blank avatar)
+  for (const [seat, m] of [[{}, M], [{ skins: null }, M], [{ skins: {} }, M], [{ skins: { chess_char_9_01_a: 's1' } }, null], [null, M]]) {
+    assert.equal(skinAvatarFor(seat, m, lookup), null);
+  }
+  // SeatCard hands it to AvatarFrame as `src` (bots never get one: they wear the default models)
+  const source = room({ capacity: 4, seats: [{ ...host, skins: { chess_char_9_01_a: 's1' } }, guest, bot, null] });
+  const facts = roomFacts(source, 'host');
+  const props = { room: source, facts, myId: 'host', busy: null, onAddBot() {}, onRemoveBot() {}, onKick() {}, onTransferHost() {}, onSwap() {} };
+  const frames = (v) => [...walk(v)].filter((n) => typeof n.type === 'function' && n.type.name === 'AvatarFrame');
+  assert.equal(frames(SeatCard({ seat: source.seats[0], index: 0, ...props })).length, 1);
+  assert.equal(frames(SeatCard({ seat: source.seats[2], index: 2, ...props }))[0].props.src, null,
+    'a bot seat never asks for a skin avatar');
 });

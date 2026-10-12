@@ -272,8 +272,12 @@ export class Room {
       // v1 extension metadata only: message bodies never ride room/public snapshots or result replay.
       chatMatchId: this.match && this.matchCtx?.live && !this.matchCtx.ended && !this.matchCtx.chat.closed
         ? this.matchCtx.chat.matchId : null,
+      // 候室皮肤 (user decision 2026-10-12): the chosen operator skins are public to teammates, so the waiting room
+      // can show them on the seat cards before the match exists. Same 口径 as the match descriptors (startMatch):
+      // freezeSkins already dropped everything the data does not know, and a bot wears the default models.
       seats: this.seats.map((s) => (s
-        ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left }
+        ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
+          skins: s.isBot ? null : s.skins || null }
         : null)),
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
       // ⇄ 换位: who negotiates with whom, and how long the target still has to answer. The only place a client learns
@@ -1059,6 +1063,9 @@ export class Lobby {
     if (!room) return OK;
     const seat = room.seatOf(session.playerId);
     if (seat) seat.skins = cleaned;
+    // 候室皮肤: the choice is public, so every member gets a frame carrying `seats[].skins` at once — without it a
+    // teammate only learned about it when the match started (or never, in the waiting room).
+    this.broadcastState(room);
     if (!room.match) return OK;
     if (typeof room.match.setSkins !== 'function') return fail(ERR.ROOM_STARTED, 'stored for the next match');
     let r;

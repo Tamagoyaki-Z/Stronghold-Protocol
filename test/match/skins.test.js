@@ -159,6 +159,34 @@ describe('room.skins (lobby): freeze on the session and the seat, hand over to t
     assert.equal(seats.find((s) => s.isBot).skins, null, 'bots wear the default models');
   });
 
+  test('room.state.seats[].skins carries the choice to the whole waiting room (bots null)', async () => {
+    const host = await pool.player('WaitHost');
+    const guest = await pool.player('WaitGuest');
+    await ok(host, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+    const created = await host.waitFor('room.state', (s) => s.hostId === host.id);
+    await ok(guest, { t: 'room.join', code: created.code });
+    await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 2);
+    await ok(host, { t: 'room.addBot' });
+    await host.waitFor('room.state', (s) => s.seats.some((x) => x && x.isBot));
+
+    // the guest picks a skin: the OTHER member (the host) must learn it from room.state alone — no match, no
+    // m.public, nothing else carries a skin while the room is still a waiting room
+    const seen = host.waitFor('room.state', (s) => !!s.seats.find((x) => x && x.playerId === guest.id)?.skins);
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A, chess_char_9_99_a: SKIN_A } });
+    const frame = await seen;
+    assert.deepEqual(frame.seats.find((x) => x.playerId === guest.id).skins, { [SKADI]: SKIN_A },
+      'the frozen map reaches the bystander, with the unknown chess already dropped');
+    assert.equal(frame.seats.find((x) => x.isBot).skins, null, 'a bot wears the default models');
+    assert.equal(frame.seats.find((x) => x.playerId === host.id).skins, null, 'a doctor who chose nothing says so');
+    // the seat-only resume path reads the same field (humanSeat copies session.skins into the seat)
+    await guest.terminate();
+    const back = await pool.player('WaitGuest', guest.token);
+    assert.equal(back.id, guest.id);
+    const resumed = await back.waitFor('room.state', (s) => !!s.seats.find((x) => x && x.playerId === back.id));
+    assert.deepEqual(resumed.seats.find((x) => x.playerId === back.id).skins, { [SKADI]: SKIN_A },
+      'a resumed session comes back into the waiting room wearing its skins');
+  });
+
   test('seats[].skins reaches the match: start() hands it over in the seat descriptors', async () => {
     const host = await pool.player('Hand');
     await ok(host, { t: 'room.skins', skins: { [SKADI]: SKIN_B, chess_char_9_99_a: SKIN_A } });

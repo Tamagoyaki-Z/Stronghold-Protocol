@@ -29,6 +29,8 @@ import { openStats } from './stats.js';
 import { SettingsButton } from '../ui/settings.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
+import { data } from '../data.js';
+import { chessAvatarUrl } from '../ui/assetUrls.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating, serverNow } from '../store.js';
 import { poolGroupOf, poolGroupSizes, GROUPED_POOL_MIN_PLAYERS } from '../../../shared/playerCapacity.js';
 import { difficultyInfo } from './lobby.js';
@@ -181,6 +183,32 @@ function GroupChip({ group }) {
     title=${t('本组内共享卡池')} aria-label=${label}>${label}</span>`;
 }
 
+/**
+ * 候室皮肤 (user decision 2026-10-12): the operator avatar of a teammate's chosen skin, or null when there is
+ * nothing to draw (the seat card then keeps its own glyph — never a blank avatar).
+ *
+ * 口径: `room.state.seats[].skins` is `{ [baseChessId]: skinId }` (docs/SKINS.md, the same map the match takes),
+ * and a waiting room has no "chosen operator" yet — the loadout is per-player and private until the match. So the
+ * FIRST key in sorted order that resolves to a real chess record (and, through it, to a real avatar) is used as
+ * that doctor's representative. `chessAvatarUrl` already falls back to the operator's own art for an unknown skin
+ * id, so a skin the local manifest does not have shows the 原皮 instead of nothing.
+ * @param {any} seat a room.state seat record
+ * @param {any} m the assets manifest (`data.get('assets')`)
+ * @param {(group: string, id: string) => any} [lookup] chess lookup (injected by tests)
+ * @returns {string|null}
+ */
+export function skinAvatarFor(seat, m, lookup = (group, id) => data.lookup(group, id)) {
+  const table = seat && typeof seat === 'object' && seat.skins && typeof seat.skins === 'object' ? seat.skins : null;
+  if (!table || !m) return null;
+  for (const id of Object.keys(table).sort()) {
+    const chess = lookup('chess', id);
+    if (!chess) continue;
+    const url = chessAvatarUrl(m, chess, table[id]);
+    if (url) return url;
+  }
+  return null;
+}
+
 /** The card's own group colour: the --group-color the border, the badge and the totals row all read. */
 function cardStyle(index, group) {
   const tint = group >= 0 ? `--group-color:${groupColor(group)};` : '';
@@ -280,6 +308,9 @@ export function swapDeadline(ref, ask) {
 export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
   const coop = room.mode !== 'solo';
   const chip = group >= 0 ? html`<${GroupChip} group=${group} />` : null;
+  // 候室皮肤: the teammate's chosen skin on its seat card (null ⇒ the card keeps its own glyph; AvatarFrame also
+  // falls back on a load error, so a missing file never leaves a blank avatar)
+  const skin = seat && !seat.isBot ? skinAvatarFor(seat, data.get('assets')) : null;
   if (!seat) {
     const canAdd = coop && facts.isHost;
     return html`<article class=${`seat seat--empty${groupedClass(group)}`} style=${cardStyle(index, group)}>
@@ -315,7 +346,7 @@ export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onA
     </header>
     <div class="seat__art">
       <div class="seat__stripes" aria-hidden="true"></div>
-      <${AvatarFrame} size="xl" name=${seat.name} seat=${index} bot=${seat.isBot} self=${isMe} ready=${state === 'ready'} offline=${offline} />
+      <${AvatarFrame} size="xl" name=${seat.name} src=${skin} seat=${index} bot=${seat.isBot} self=${isMe} ready=${state === 'ready'} offline=${offline} />
       ${seat.isBot ? html`<span class="seat__bot-label"><${Icon} name="robot" />${t('AI 队友')}</span>` : null}
     </div>
     <div class="seat__who">
