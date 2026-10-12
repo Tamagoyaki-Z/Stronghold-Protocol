@@ -1188,7 +1188,7 @@ describe('screen helpers', () => {
     assert.equal(codeArg('ZZZ QQQ', ''), 'ZZZQ', 'a real string is still truncated to ROOM_CODE_LEN');
   });
 
-  test('lobby: battlefield note per difficulty (标准 fixed 战场#01, 险境 8 / 绝境·终极 7 random) matches config.json modes[].stages', async () => {
+  test('lobby: battlefield note per difficulty (标准 fixed 战场#01, 险境 9 / 绝境·终极 7 random) matches config.json modes[].stages', async () => {
     const { difficultyInfo, stageNote, stageLabel, STAGE_POOL } = await mod('screens/lobby.js');
     const cfg = JSON.parse(readFileSync(path.join(ROOT, 'data/config.json'), 'utf8'));
     for (const [modeId, m] of Object.entries(cfg.modes)) {
@@ -1200,12 +1200,12 @@ describe('screen helpers', () => {
     // config.json not loaded here: the embedded fallback
     for (const room of ['solo', 'coop']) {
       assert.equal(difficultyInfo(room, 'FUNNY').stageNote, '战场固定为 战场#01');
-      assert.equal(difficultyInfo(room, 'NORMAL').stageNote, '战场随机（共8张）');
+      assert.equal(difficultyInfo(room, 'NORMAL').stageNote, '战场随机（共9张）');
       assert.equal(difficultyInfo(room, 'HARD').stageNote, '战场随机（共7张）');
       assert.equal(difficultyInfo(room, 'ABYSS').stageNote, '战场随机（共7张）');
     }
     assert.equal(difficultyInfo('coop', 'BOGUS').stageNote, '');
-    assert.equal(stageNote(cfg.modes.mode_multi_normal.stages), '战场随机（共8张）');
+    assert.equal(stageNote(cfg.modes.mode_multi_normal.stages), '战场随机（共9张）');
     assert.equal(stageNote(['act1autochess_m01']), '战场固定为 战场#01');
     assert.equal(stageNote([]), '');
     assert.equal(stageNote(null), '');

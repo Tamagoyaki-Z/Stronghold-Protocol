@@ -302,7 +302,8 @@ test('stages: 19 rows × 21 cols with known glyphs; paths are contiguous', () =>
     }
     assert.ok(s.groundPaths['9,10->9,2'], `${s.id}: lower gate path`);
   }
-  assert.equal(Object.values(stages).filter((s) => s.active).length, 8);
+  // 9: 战场#01-#04 + 沙地 (战场#06 上半, the owner's activation) + act2 战场#05-#08 (migrate reads 9 here too)
+  assert.equal(Object.values(stages).filter((s) => s.active).length, 9);
 });
 
 test('bosses, factions, tokens and choices resolve', () => {

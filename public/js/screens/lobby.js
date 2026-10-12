@@ -47,7 +47,7 @@ export const MODE_TEXT = {
 };
 
 /** Battlefield pool per difficulty when config.json is absent (the modes' `stages` lists; same for solo and co-op). */
-export const STAGE_POOL = { FUNNY: ['act1autochess_m01'], NORMAL: 8, HARD: 7, ABYSS: 7 };
+export const STAGE_POOL = { FUNNY: ['act1autochess_m01'], NORMAL: 9, HARD: 7, ABYSS: 7 };
 
 /**
  * Display name of a stage: stages.json when it is loaded, else derived from the id (act1 m0N → 战场#0N, act2 m0N → 战场#0(N+4)).
