@@ -185,7 +185,7 @@ test('playing statistics count connected present humans in matches, including el
   assert.equal(lobby.discovery.projection().playingCount, 0);
 });
 
-test('directory observation works before and during matches and preserves the two-slot reservation limit', (t) => {
+test('directory observation works before and during matches and preserves the spectator reservation limit', (t) => {
   const { lobby, player, room, access, policy } = harness(t);
   const host = player('Host'), before = player('Before'), during = player('During'), third = player('Third');
   const r = room(host, 'coop', 4);
@@ -197,12 +197,16 @@ test('directory observation works before and during matches and preserves the tw
   assert.deepEqual(access(during, r, true), { ok: true });
   assert.equal(r.match.spectators.has(during.playerId), true);
   assert.equal(r.seats.filter(Boolean).length, 1, 'observers never take a player seat');
+  // MAX_SPECTATORS is a deliberate local override (10, the live server's value): fill the strip against the
+  // constant instead of assuming the upstream two seats.
+  for (let i = 2; i < MAX_SPECTATORS; i++) assert.deepEqual(access(player(`Watcher${i}`), r, true), { ok: true });
   assert.equal(roomSummary(r).spectatorCount, MAX_SPECTATORS);
   assert.equal(roomSummary(r).spectatable, false);
   before.connected = false;
   lobby.onDisconnect(before);
   error(access(third, r, true), ERR.ROOM_FULL);
-  error(access(host, r, true), ERR.ALREADY, 'players cannot change into observers in place');
+  // a seated player no longer gets ALREADY: the seat-to-spectator path answers with the more specific code
+  error(access(host, r, true), ERR.ROOM_STARTED, 'a seated player cannot switch to a spectator seat during a match');
   assert.deepEqual(lobby.removeSpectator(host, { playerId: before.playerId }), { ok: true });
   assert.equal(r.match.spectators.has(before.playerId), false);
   assert.equal(roomSummary(r).spectatable, true);

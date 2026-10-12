@@ -635,9 +635,12 @@ describe('websocket lobby', () => {
     assert.equal(seatOf(seated, host.id).seat, 1, 'the first free seat');
     assert.deepEqual(seated.spectators, [], 'the spectator seat was released');
     // a full spectator strip refuses a seated doctor as well
-    const w1 = await pool.player('W1'); const w2 = await pool.player('W2');
-    await expectOk(w1, { t: 'room.spectate', code: st.code });
-    await expectOk(w2, { t: 'room.spectate', code: st.code });
+    // Fill the WHOLE strip. MAX_SPECTATORS is a deliberate local override (10: the value the live server has
+    // been giving players since 0.2.3) — the cap must be exercised against the constant, not against a literal.
+    for (let i = 0; i < MAX_SPECTATORS; i++) {
+      const w = await pool.player(`W${i}`);
+      await expectOk(w, { t: 'room.spectate', code: st.code });
+    }
     const full = await host.waitFor('room.state', (s) => s.spectators.length === MAX_SPECTATORS);
     assert.equal(full.seats.filter(Boolean).length, 2, 'both player seats intact');
     await expectError(mate, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
@@ -707,9 +710,19 @@ describe('websocket lobby', () => {
     // the cap; spectators never count toward the players: two player seats still free
     const s2 = await pool.player('Watcher2');
     await expectOk(s2, { t: 'room.spectate', code: st.code });
-    assert.equal(MAX_SPECTATORS, 2);
+    // MAX_SPECTATORS = 10 is a deliberate local override (the value the live server has shipped since 0.2.3), so the
+    // cap is exercised against the CONSTANT: fill the strip, check the (cap+1)-th is refused, then let the fillers go —
+    // the rest of this test asserts on the two spectators it made itself.
+    assert.equal(MAX_SPECTATORS, 10);
+    const fillers = [];
+    for (let i = 2; i < MAX_SPECTATORS; i++) {
+      const f = await pool.player(`Filler${i}`);
+      await expectOk(f, { t: 'room.spectate', code: st.code });
+      fillers.push(f);
+    }
     const s3 = await pool.player('Watcher3');
     await expectError(s3, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
+    for (const f of fillers) await expectOk(f, { t: 'room.leave' });
     await joinRoom(s3, st.code);
     await expectOk(host, { t: 'room.addBot' });
     const full = await host.waitFor('room.state', (s) => s.seats.every(Boolean));

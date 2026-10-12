@@ -14,7 +14,7 @@ export const DEV_BUILD = /-dev$/.test(APP_VERSION);
 export const BASE_SEATS = 4;
 export const MAX_SEATS = 20;
 export const DEFAULT_SEATS = 8;
-export const ROOM_CAPACITIES = Object.freeze([4, 8, 10, 16, 20]);
+export const ROOM_CAPACITIES = Object.freeze([4, 6, 8, 10, 12, 16, 20]);
 /** One independent 机变 page per fixed group; card indexes are local to its six positions. */
 export const MAX_DRAFT_CARDS = 6;
 /**
@@ -23,7 +23,7 @@ export const MAX_DRAFT_CARDS = 6;
  * A spectator never counts as a player, may not act, and watches like an eliminated player (server/lobby.js spectate,
  * server/match/match/watch.js addSpectator).
  */
-export const MAX_SPECTATORS = 2;
+export const MAX_SPECTATORS = 10;
 export const ROOM_CODE_LEN = 4;
 export const NAME_MAX_LEN = 12;
 

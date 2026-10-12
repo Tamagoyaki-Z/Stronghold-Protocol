@@ -529,6 +529,7 @@ export const S2C = [
   'room.swapAsked', 'room.swapEnded',
   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
   // m.layer { playerId, bondId, add } — own live prep layer gain; ephemeral, never replayed on resync.
+  // Wire: the v1 readable JSON fallback, exactly like m.emergency (declared in test/wire-codec.test.js).
   'm.layer',
   // Post-v1 JSON fallback; repeated in welcome.emergency and match public freeze extensions.
   'm.emergency',

@@ -25,7 +25,9 @@ const V1_EXTENSIONS = Object.freeze({
 const V1_JSON_FALLBACK = Object.freeze({
   c2s: ['room.chat', 'room.setMatchmaking', 'lobby.join', 'lobby.spectate', 'room.skins',
     'room.swapAsk', 'room.swapAnswer', 'room.swapCancel'],
-  s2c: ['m.chat', 'm.chatState', 'm.emergency', 'room.swapAsked', 'room.swapEnded'],
+  // m.layer (0.2.5, the own live prep-layer gain) is ephemeral and never replayed on resync — the same shape
+  // of message as m.emergency, so it uses the readable JSON fallback rather than a new numeric id.
+  s2c: ['m.chat', 'm.chatState', 'm.emergency', 'm.layer', 'room.swapAsked', 'room.swapEnded'],
 });
 
 test('v1 complete catalog fingerprint prevents accidental published field or enum renumbering', () => {
@@ -181,7 +183,10 @@ function noPublicExtensions(message) {
     const known = new Set(fields.map(nameOf));
     for (const k of Object.keys(v)) assert.ok(k === 't' || known.has(k)
       || (fields === WIRE_RECORDS.card && k === 'soldOut')
-      || (path === 'm.public' && ['emergencyFrozen', 'emergencyFrozenAt', 'emergencyReason'].includes(k)),
+      || (path === 'm.public' && ['emergencyFrozen', 'emergencyFrozenAt', 'emergencyReason',
+        // 0.2.5 draws the boss pairing per match (server/match/Match.js bossPairs) and publishes it here; it is
+        // a post-v1 public field, so it rides the JSON extension slot like the emergency flags above.
+        'bossPairs'].includes(k)),
       `${path}.${k} needs an explicit position or declared v1 extension`);
     for (const field of fields) if (typeof field !== 'string' && Object.hasOwn(v, field[0])) {
       const [key, type] = field;

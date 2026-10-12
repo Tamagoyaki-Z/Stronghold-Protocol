@@ -459,7 +459,6 @@ export async function createFieldView(host, options = {}) {
     }, delay);
   }
   // Attach the board only after synchronous setup completes; enable3d also guards late arrivals.
-  // Attach the board only after synchronous setup completes; enable3d also guards late arrivals.
   // `!perfMode()`: 玩家可能在 three.js / 素材包还在下载时打开性能模式（设置里一键切），那一次迟到的 3D 棋盘
   // 不能因为「创建时没开」就把 3D 装回来 —— 显式的 setBoardMode('3d')（开发用）不受这里影响。
   const boardReady = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack && !perfMode() ? enable3d(THREE, pack) : false), () => false);
@@ -1961,7 +1960,7 @@ export async function createFieldView(host, options = {}) {
       recover.off = false; recover.tries = 0;
       if (board3d) return true;
       if (!webgl2Available(true)) return false; // an explicit request: a slow GPU is the caller's choice
-      const [THREE, pack] = await Promise.all([loadThree(), loadBoardPack(assets)]);
+      const [THREE, pack] = await Promise.all([loadThree(), loadBoardPack(assets, boardThemeGroup)]);
       return enable3d(THREE, pack);
     },
     destroy() {

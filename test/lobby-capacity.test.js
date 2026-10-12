@@ -197,3 +197,10 @@ test('twenty real WebSocket players can join and start the same co-op room', asy
     await srv.close();
   }
 });
+
+// The live private server (0.2.3) has offered 6- and 12-doctor alliances since 2026-10-12, while upstream 0.2.5
+// ships [4, 8, 10, 16, 20]. A player-visible capability must not regress, so the wider list wins and is pinned
+// here: dropping 6 or 12 again (or reordering) is a product decision, not a refactor.
+test('room capacities keep the live server list (six and twelve included)', () => {
+  assert.deepEqual([...ROOM_CAPACITIES], [4, 6, 8, 10, 12, 16, 20]);
+});

@@ -202,15 +202,18 @@ describe('乐观界面反馈: a refusal withdraws it and says why (existing toas
   test('one intent\'s failure never withdraws another intent\'s feedback (even on the same key)', async () => {
     const stub = stubNet();
     try {
-      const first = actions.refresh();
-      const second = actions.refresh();               // same key: a second unanswered request
+      // g.refresh is single-flighted by upstream #501 (0.2.5): a second tap while the first is on the wire is
+      // dropped, so it can never produce two intents. The counting contract is exercised with g.buy, which is
+      // not single-flighted.
+      const first = actions.buy(4);
+      const second = actions.buy(4);                  // same key: a second unanswered request
       assert.equal(pendingTotal(), 2, 'counted, not a boolean');
       stub.calls[0].reject(new Error('boom'));
       assert.equal(await first, false);
-      assert.equal(isPendingKey('g.refresh'), true, 'the second request is still unanswered — stay held');
+      assert.equal(isPendingKey('g.buy:4'), true, 'the second request is still unanswered — stay held');
       stub.calls[1].resolve();
       assert.equal(await second, true);
-      assert.equal(isPendingKey('g.refresh'), false);
+      assert.equal(isPendingKey('g.buy:4'), false);
       assert.equal(pendingTotal(), 0);
     } finally { stub.restore(); }
   });
@@ -372,7 +375,9 @@ describe('乐观界面反馈: the setting is ON by default and gates every marke
     // the cards / the two tool buttons are held and disabled; the level card only flips aria-busy
     assert.match(src, /disabled=\$\{pending \? true : undefined\} aria-busy=\$\{pending \? 'true' : undefined\}/);
     assert.match(src, /class=\$\{cx\('toolbtn', 'toolbtn--ice', frozen && 'is-on'\)\} disabled=\$\{\!\!frzReason \|\| frzPending\}/);
-    assert.match(src, /class="toolbtn toolbtn--amber" disabled=\$\{\!\!refReason \|\| refPending\}/);
+    // upstream #501 single-flights the refresh and dims the button while the request is on the wire;
+    // the pending marker holds it as well, so the merged disable is the union of the two.
+    assert.match(src, /class="toolbtn toolbtn--amber" disabled=\$\{\!\!refReason \|\| refreshBusy \|\| refPending\}/);
     assert.match(src, /aria-busy=\$\{pending \? 'true' : undefined\}\n *title=/);
     assert.equal((src.match(/class="apend"/g) || []).length, 5, 'both cards, 冻结, 刷新 and the level card carry the sweep bar');
   });

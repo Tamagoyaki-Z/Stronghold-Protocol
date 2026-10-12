@@ -20,6 +20,8 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { MAX_SPECTATORS } from '../shared/constants.js';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
 const HTML_PAGES = ['index.html', 'dev/uikit.html'];
@@ -1221,8 +1223,10 @@ describe('screen helpers', () => {
     assert.deepEqual(spectateSwitchGate(room(), 'me'), { can: true, reason: '' }, 'a waiting co-op room with a free seat');
     assert.equal(spectateSwitchGate(room({ inMatch: true }), 'me').reason, '开局后无法切换观战', 'the owner\'s hard rule');
     assert.equal(spectateSwitchGate(room({ mode: 'solo' }), 'me').reason, '单人局没有观战席');
-    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }, { playerId: 'b' }] }), 'me').reason, '观战席已满');
-    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }] }), 'me').can, true, 'one free seat is enough');
+    // the strip is MAX_SPECTATORS wide (a deliberate local override: 10), so build it from the constant
+    const strip = (n) => Array.from({ length: n }, (_, i) => ({ playerId: `sp${i}` }));
+    assert.equal(spectateSwitchGate(room({ spectators: strip(MAX_SPECTATORS) }), 'me').reason, '观战席已满');
+    assert.equal(spectateSwitchGate(room({ spectators: strip(MAX_SPECTATORS - 1) }), 'me').can, true, 'one free seat is enough');
     const alone = spectateSwitchGate(room({ seats: [seat('me')] }), 'me');
     assert.equal(alone.can, false, 'the last doctor would disband the room');
     assert.match(alone.reason, /唯一的博士/);
