@@ -197,14 +197,14 @@ export class PlayerAcquire {
     return np;
   }
 
-  /** Normal item → golden version in place (整备). A golden occupies two shared copies and this piece
-   * already occupies one, so the upgrade waits when no second copy is free. The caller keeps its charge. */
+  /** Normal item → golden version in place (整备). Trait-fixed pieces carry their identity marker through the upgrade. */
   upgradeItem(piece) {
     const rec = this.gd.item(piece.id);
     if (!rec || rec.isGolden) return false;
     const gid = rec.upgradeChessId || rec.goldenId;
     if (!gid || !this.gd.item(gid)) return false;
-    if (this.m.itemPool.left(piece.id) < 1) return false;
+    const exempt = piece.noPool === true && this.gd.isTraitFixedItem(piece.id);
+    if (!exempt && this.m.itemPoolFor(this).left(piece.id) < 1) return false;
     piece.id = gid;
     this.recompute();
     return true;
@@ -231,7 +231,7 @@ export class PlayerAcquire {
       const fresh = (id) => !list.includes(id);
       for (let i = 0; i < ro.count; i++) {
         let id = null;
-        for (let tt = t; tt >= 1 && !id; tt--) id = this.m.pool.roll(this.m.rngShop, { tier: tt, filter: fresh, extra: this.diyStockEntries() });
+        for (let tt = t; tt >= 1 && !id; tt--) id = this.pool.roll(this.m.rngShop, { tier: tt, filter: fresh, extra: this.diyStockEntries() });
         if (id) list.push(id);
       }
     }
@@ -247,7 +247,7 @@ export class PlayerAcquire {
    * 'item' under its `label` (the effect's name; player report #6 after 0.1.0).
    */
   pushItemOffer(ids, { source = 'effect', tier = null, label = null } = {}) {
-    const list = [...new Set(Array.isArray(ids) ? ids : [])].filter((id) => this.gd.item(id) && this.m.itemPool.canGain(id)).slice(0, MAX_OFFER_SLOTS);
+    const list = [...new Set(Array.isArray(ids) ? ids : [])].filter((id) => this.gd.item(id) && this.m.itemPoolFor(this).canGain(id)).slice(0, MAX_OFFER_SLOTS);
     if (!list.length) return null;
     const offer = { tier: Number.isInteger(tier) ? tier : null, source, label: typeof label === 'string' && label ? label : null, slots: list.map((id) => ({ kind: 'item', id, price: 0, sold: false })) };
     this.offers.push(offer);
@@ -288,19 +288,20 @@ export class PlayerAcquire {
    * already equipped is taken off for the fight about to start. Hand and temp both full keeps the 「整备区已满，获得的装备已销毁」
    * outcome. [ASSUMED] every item granted at 休整期结束, not only 维多利亚's 战栗维式重锤 (owner's decision 2026-10-04).
    */
-  acquireItem(itemId, { source = 'grant', toTemp = false, silent = false, deferMerge = false, requirePool = true } = {}) {
+  acquireItem(itemId, { source = 'grant', toTemp = false, silent = false, deferMerge = false, requirePool = true, noPool = false } = {}) {
     const rec = this.gd.item(itemId);
     if (!rec) return null;
-    // Only the fixed operator-gift families can overdraw. Several unrelated strategy grants also pass
-    // requirePool:false; they must retain their stock limit (for example commercial packaging).
-    const unlimitedGift = !requirePool && this.gd.isUnlimitedGiftItem(itemId);
-    if (!unlimitedGift && !this.m.itemPool.canGain(itemId)) {
+    // Upstream 0.2.5: only the fixed operator-gift families can overdraw. Several unrelated strategy grants also pass
+    // requirePool:false and must retain their stock limit (for example commercial packaging). The fork's `noPool`
+    // source marker is honoured as an equivalent spelling; identity — never the marker — decides.
+    const exempt = (noPool === true || requirePool === false) && this.gd.isUnlimitedGiftItem(itemId);
+    if (!exempt && !this.m.itemPoolFor(this).canGain(itemId)) {
       this.m.toast(this, 'warn', '装备库存不足，未获得该装备');
       return null;
     }
-    let piece = this.newPiece('item', itemId);
-    // A prep-end grant may sit beside an identical copy until the next prep. The invariant counts only copies
-    // without this mark, so the fight that is about to start is not reported as a missed merge.
+    let piece = this.newPiece('item', itemId, exempt ? { noPool: true } : {});
+    // A prep-end grant may sit beside an identical copy until the next prep; the deferred marker only postpones the
+    // merge and does not change shared-stock accounting.
     if (deferMerge) piece.deferMerge = true;
     if (!deferMerge && this.completesItemMerge(itemId)) {
       piece = this._mergeItem(itemId, piece);
@@ -324,7 +325,7 @@ export class PlayerAcquire {
     // remember where equipped twins sat: with a full hand AND a full temp the golden item takes the first one's slot
     const slotOf = consumed.filter((l) => l.area === 'equipped').map((l) => ({ holder: l.holder, idx: l.holder.items.indexOf(l.piece) }));
     for (const l of consumed) if (l.area !== 'new') this._detach(l);
-    const golden = this.newPiece('item', rec.upgradeChessId || rec.goldenId);
+    const golden = this.newPiece('item', rec.upgradeChessId || rec.goldenId, consumed.every((l) => l.piece.noPool) ? { noPool: true } : {});
     if (!this.stow(golden, { allowTemp: true })) {
       const at = slotOf[0];
       if (!at || !this.find(at.holder.uid)) {

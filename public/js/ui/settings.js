@@ -1,4 +1,4 @@
-// Player settings (BGM/SFX/voice volume, the voice dub 语音语言, mute, damage numbers, render quality, 文字大小, the
+// Player settings (BGM/SFX/voice volume, the voice dub 语音语言, mute, damage numbers, render quality, 性能模式, 文字大小, the
 // shortcut keys): a tiny observable store persisted in localStorage (`sp.pref.settings`), applied to the audio manager
 // and to the document on every change, plus the settings modal — which also holds the language switch (ui/lang.js; kept
 // apart in `sp.pref.lang`; under it a note while the current language's pack is a machine translation,
@@ -47,6 +47,12 @@ export function applyTextSize(v) {
 settingsStore.subscribe((s) => {
   savePref('settings', sanitizeSettings(s));
   audio.setVolumes(s);
+  // 中日语音: the language takes effect on the next line. The v0.2.4 line's settings.js pre-calls the ONE-argument
+  // form here ("stops the one on air and drops any line still decoding"), but public/js/audio.js is byte-identical in
+  // both lines and `setVoiceLang(lang, overrides = this.voiceOverrides)` has no stop side effect at all — a line on
+  // air is only ever ended by `_stopVoice` (a takeover, or `setFieldUnits` releasing the gate), and a line still
+  // decoding is dropped only when `voiceToken` moves on. So the pre-call is inert and is deliberately not carried
+  // over; adding it back would change nothing. (See _r024d-HANDOFF4.md item 4.)
   audio.setVoiceLang(s.voiceLang, s.voiceOverrides);
   applyTextSize(s.textSize);
 });
@@ -80,15 +86,25 @@ function Slider({ label, micro, value, onInput, icon }) {
   </label>`;
 }
 
-function Toggle({ label, micro, value, onChange }) {
+/**
+ * 性能模式 / 乐观界面反馈: a two-state switch. `data-testid` names the switch on the button itself, so an end-to-end
+ * test can find it in the rendered modal (`Toggle` is also used by the diagnostics section without one).
+ * @param {{ label?: any, micro?: string, value: boolean, onChange: (v: boolean) => void, 'data-testid'?: string }} props
+ */
+function Toggle({ label, micro, value, onChange, 'data-testid': testid }) {
   return html`<div class="set-row">
     <span class="set-row__label">${label}<${MicroLabel}>${micro}<//></span>
-    <button type="button" class=${`set-toggle${value ? ' is-on' : ''}`} role="switch" aria-checked=${value ? 'true' : 'false'}
+    <button type="button" data-testid=${testid} class=${`set-toggle${value ? ' is-on' : ''}`} role="switch" aria-checked=${value ? 'true' : 'false'}
       onClick=${() => onChange(!value)}><i></i><span>${value ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
   </div>`;
 }
 
 const QUALITY = [['high', N_('高')], ['medium', N_('中')], ['low', N_('低')]];
+/**
+ * 分辨率 (ui/gameLogic/settings.js RESOLUTION_MODES): a pixel-ratio CAP for the field canvas, split out of 画质 so a
+ * phone whose operator models read blurry can ask for more pixels without also paying for the 3D board's fill.
+ */
+const RESOLUTION = [['auto', N_('自动')], ['720p', N_('720p')], ['1080p', N_('1080p')], ['1440p', N_('1440p')], ['native', N_('原生')]];
 /**
  * 文字大小: one step of TEXT_SIZES (ui/gameLogic/settings.js) with its label — 小 is the design's own sizes, the others
  * raise the text root `--t` (css/theme.css) and with it every readable font-size; the board and the HUD's boxes stay.
@@ -280,6 +296,21 @@ export function SettingsModal({ open, onClose }) {
         </div>
       </div>
       <p class="set-hint set-textsize-note">${t('调整界面文字大小，棋盘保持原比例。')}</p>
+
+      <div class="set-row" data-testid="resolution-row">
+        <span class="set-row__label">${t('分辨率')}<${MicroLabel}>RESOLUTION<//></span>
+        <div class="set-seg" role="radiogroup" aria-label=${t('分辨率')}>
+          ${RESOLUTION.map(([id, label]) => html`<button key=${id} type="button" role="radio" aria-checked=${s.resolution === id ? 'true' : 'false'}
+            data-resolution=${id} class=${s.resolution === id ? 'is-on' : ''} onClick=${() => updateSettings({ resolution: id })}>${t(label)}</button>`)}
+        </div>
+      </div>
+      <p class="set-hint">${t('分辨率：自动跟随画质。觉得干员偏糊就调高；手机发热或掉帧就调低。')}</p>
+      <${Toggle} label=${t('性能模式')} micro="PERFORMANCE MODE" value=${s.performanceMode}
+        data-testid="performance-mode" onChange=${(v) => updateSettings({ performanceMode: v })} />
+      <p class="set-hint set-perf-note">${t('关闭 3D 棋盘与高开销特效，降低卡顿（画面会变朴素）。')}</p>
+      <${Toggle} label=${t('乐观界面反馈')} micro="OPTIMISTIC FEEDBACK" value=${s.optimisticFeedback !== false}
+        data-testid="optimistic-feedback" onChange=${(v) => updateSettings({ optimisticFeedback: v })} />
+      <p class="set-hint">${t('点按后立即把按钮 / 卡牌标成「处理中」，服务器确认或拒绝后自动撤销；不改变任何游戏数值。')}</p>
       <${HotkeySection} keys=${s.keys} touchUi=${touchUi} />
       <${DiagSection} />
       <p class="set-hint">${touchUi ? t('触屏操作：点击单位选中（撤退 / 出售）· 长按单位或卡牌查看详情 · 拖动部署后滑动选择朝向') : t('右键查看详情')}</p>

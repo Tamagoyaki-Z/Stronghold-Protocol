@@ -16,7 +16,7 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } fro
 import htm from '../../vendor/htm.module.js';
 import { DIFFICULTY_NAMES, DIFFICULTY_COLORS } from '../../../shared/constants.js';
 import { t } from '../../../shared/i18n.js';
-import { serverNow } from '../store.js';
+import { matchClockNow, emergencyClockAt, useStore } from '../store.js';
 import { data, useData, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 
@@ -48,6 +48,9 @@ export const ICONS = {
   crown: { d: 'M3 7l4.6 4.2L12 4l4.4 7.2L21 7l-1.8 10H4.8zM5 19h14v2H5z' },
   robot: { d: 'M11 2h2v3h4a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3h4zM8.5 9.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zm7 0a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zM9 15v1.6h6V15zM1 10h2v5H1zm20 0h2v5h-2z', eo: true },
   copy: { d: 'M8 3h11v13h-2V5H8zM5 7h10v14H5zm2 2v10h6V9z', eo: true },
+  chat: { d: 'M3 3h18v14H8l-5 4zm2 2v11.8L7.3 15H19V5zm3 3h8v2H8zm0 4h6v2H8z', eo: true },
+  download: { d: 'M11 3h2v9.2l3.6-3.6L18 10l-6 6-6-6 1.4-1.4 3.6 3.6zM4 17h2v3h12v-3h2v5H4z' },
+  folder: { d: 'M2 5h8l2 2h10v14H2zm2 4v10h16V9h-9l-2-2H4z', eo: true },
   link: { d: 'M9 7H6.5a5 5 0 0 0 0 10H9v-2H6.5a3 3 0 0 1 0-6H9zm6 0h2.5a5 5 0 0 1 0 10H15v-2h2.5a3 3 0 0 0 0-6H15zM8 11h8v2H8z' },
   plus: { d: 'M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z' },
   minus: { d: 'M4 11h16v2H4z' },
@@ -62,6 +65,8 @@ export const ICONS = {
   chevronRight: { d: 'M8.6 5 7.2 6.4 12.8 12l-5.6 5.6L8.6 19l7-7z' },
   chevronLeft: { d: 'M15.4 5l1.4 1.4-5.6 5.6 5.6 5.6-1.4 1.4-7-7z' },
   chevrons: { d: 'M5.6 5 4.2 6.4 9.8 12l-5.6 5.6L5.6 19l7-7zm7 0-1.4 1.4 5.6 5.6-5.6 5.6 1.4 1.4 7-7z' },
+  // ⇄ 换位 (the room's seat swap, room.swapAsk): two arrows pointing the opposite way
+  swap: { d: 'M7.4 4 3 8.4l1.4 1.4L6 8.2V19h2V8.2l1.6 1.6L11 8.4zm9.2 16 4.4-4.4-1.4-1.4L18 15.8V5h-2v10.8l-1.6-1.6L13 15.6zM3 8.4h8v2H3zm10 5.2h8v2h-8z', eo: true },
   hourglass: { d: 'M6 2h12v2h-1v3.5L13.5 12l3.5 4.5V20h1v2H6v-2h1v-3.5l3.5-4.5L7 7.5V4H6zm3 2v2.8l3 3.9 3-3.9V4zm0 16h6v-2.8l-3-3.9-3 3.9z', eo: true },
   dots: { d: 'M5 10.3a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4zm7 0a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4zm7 0a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4z' },
   key: { d: 'M14.5 3a6.5 6.5 0 1 1-2.6 12.5l-1.1 1.1H9v2H7v2H3v-3.6l5.5-5.5A6.5 6.5 0 0 1 14.5 3zm1.5 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z', eo: true },
@@ -345,7 +350,7 @@ export const hasDeadline = (deadline) => Number.isFinite(deadline) && deadline >
  */
 export function secondsLeft(deadline) {
   if (!hasDeadline(deadline)) return null;
-  return Math.max(0, Math.ceil((deadline - serverNow()) / 1000));
+  return Math.max(0, Math.ceil((deadline - matchClockNow()) / 1000));
 }
 
 /**
@@ -358,8 +363,9 @@ export function secondsLeft(deadline) {
  *   deadline: server epoch ms (live); seconds: static value (overrides deadline); total: seconds for the gauge.
  */
 export function Countdown({ deadline, seconds, total, warnAt = 10, label = 'COUNTDOWN', size = 'md', gauge = true, onExpire, class: cls }) {
+  const emergencyAt = useStore(emergencyClockAt);
   const live = seconds == null && hasDeadline(deadline);
-  useTicker(live ? 200 : 0);
+  useTicker(live && emergencyAt == null ? 200 : 0);
   const remain = seconds != null && Number.isFinite(Number(seconds)) ? Math.max(0, Math.floor(Number(seconds))) : live ? secondsLeft(deadline) : null;
   const warn = remain != null && remain <= warnAt;
   const text = remain == null ? '--' : String(Math.min(999, remain)).padStart(2, '0');
@@ -368,7 +374,7 @@ export function Countdown({ deadline, seconds, total, warnAt = 10, label = 'COUN
 
   const expiredFor = useRef(null);
   useEffect(() => {
-    if (!onExpire || !live) return;
+    if (!onExpire || !live || emergencyAt != null) return;
     if (remain === 0 && expiredFor.current !== deadline) {
       expiredFor.current = deadline;
       onExpire();
@@ -832,12 +838,18 @@ export function doctorNo(id) {
 
 /**
  * Latency pill ("58ms"), coloured by research 06 §3.4 tiers (<60 mint, <200 amber, else red).
- * @param {{ ms?: number|null, online?: boolean, class?: string }} props
+ * The tooltip shows the raw last round trip beside the displayed (filtered) value when the two differ — the pill
+ * shows net.ping (the minimum of the last five compensated samples), `raw` is net.pingRaw.
+ * @param {{ ms?: number|null, raw?: number|null, online?: boolean, class?: string }} props
  */
-export function PingPill({ ms, online = true, class: cls }) {
+export function PingPill({ ms, raw, online = true, class: cls }) {
   const ok = online && Number.isFinite(ms);
   const tier = !ok ? 'off' : ms < 60 ? 'low' : ms < 200 ? 'medium' : 'high';
-  return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${ok ? t('当前延迟 {ms}ms', { ms }) : t('未连接')}>
+  const rawMs = Number.isFinite(raw) ? Math.round(raw) : null;
+  const title = !ok ? t('未连接')
+    : rawMs != null && rawMs !== Math.round(ms) ? t('当前延迟 {ms}ms（原始 {raw}ms）', { ms, raw: rawMs })
+    : t('当前延迟 {ms}ms', { ms });
+  return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${title}>
     <${Icon} name=${ok ? 'signal' : 'wifiOff'} class="ping__icon" />
     <span class="ping__value">${ok ? Math.min(9999, Math.round(ms)) : '--'}</span><span class="ping__unit">ms</span>
   </span>`;

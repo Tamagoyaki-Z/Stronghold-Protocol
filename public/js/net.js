@@ -31,13 +31,33 @@
 
 import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
+import { WIRE_VERSION, encodeWire, decodeWire } from '../../shared/wireCodec.js';
 import { N_ } from '../../shared/i18n.js';
+import { assetCache } from './assetCache.js';
+
+const ASSET_ADMISSION_TYPES = new Set(['room.create', 'room.join', 'lobby.quickMatch', 'room.spectate', 'lobby.join', 'lobby.spectate']);
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
 export const PING_INTERVAL_MS = 4000;
 export const DEAD_AFTER_MS = 15000;
+/** 主线程滞后探针的采样周期（漂移法，见 _startLagProbe）。 */
+export const LAG_PROBE_INTERVAL_MS = 100;
+/** 滞后估计的观察窗（ms）：窗口内的样本参与中位数与 minRaw 的计算。 */
+export const LAG_PROBE_WINDOW_MS = 10000;
+/** 探针的期望时刻每个 tick 向实际时刻收敛的比例，防止一次长阻塞永久抬高基线。 */
+export const LAG_PROBE_CATCHUP = 0.1;
+/** 单个 tick 的 drift 上限（ms）：后台标签页的定时器节流、几秒级冻结都不该把显示值一次打到 0。 */
+export const LAG_PROBE_MAX_DRIFT_MS = 2000;
+/**
+ * 滞后补偿的绝对值下限（ms）：窗口刚建立、样本不足、或窗口内的原始样本全都很高时，
+ * 显示值也不会被扣到 0（用户实测过「当前 0 ms（原始 200 ms）」——那不可能，物理链路上真实 RTT 有下限）。
+ */
+export const LAG_FLOOR_MS = 20;
 export const BACKOFF = Object.freeze({ base: 500, factor: 2, max: 10000, jitter: 0.2 });
+const EMERGENCY_RETRY_MS = 120000;
+const EMERGENCY_RETRY_MIN_MS = 30000;
+const EMERGENCY_RETRY_JITTER_MS = 5000;
 
 /** Client-side error codes (in addition to shared ERR codes). */
 export const CLIENT_ERR_TEXT = Object.freeze({
@@ -93,6 +113,48 @@ export function backoffDelay(attempt, rand = Math.random) {
 }
 
 /**
+ * 单调时钟（滞后探针与原始往返窗口共用；测试可经 `new Net({ clock })` 注入）。
+ * @returns {number} milliseconds
+ */
+export function monotonicNow() {
+  return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+}
+
+/**
+ * 主线程滞后估计：窗口内 drift 的**中位数**（样本数为偶数时取较小者，样本为空时 0）。
+ *
+ * 早期实现取窗口内的**最大值**，那会被一次极端 tick（一次长阻塞、一次后台节流）抬高，
+ * 而这个值又从每一次实测往返里扣除 —— 最坏一次的排队时间通常大于这条 pong 实际排队的时间，
+ * 于是显示值被过扣到 0（用户实测「当前 0 ms（原始 200 ms）」）。中位数代表「这段时间消息典型要排多久」。
+ * @param {{ drift: number }[]} samples 观察窗内的样本
+ * @returns {number} milliseconds
+ */
+export function lagEstimate(samples) {
+  const list = Array.isArray(samples) ? samples.map((s) => Number(s?.drift) || 0).sort((a, b) => a - b) : [];
+  if (list.length === 0) return 0;
+  return list[Math.floor((list.length - 1) / 2)]; // 偶数个样本取较小的一侧
+}
+
+/**
+ * 用滞后估计补偿一次原始往返，并夹在 [minRaw, rtt] 内：
+ * `adjusted = min(rtt, max(rtt − lag, minRaw, floor))`。
+ *
+ * `minRaw` 是同一观察窗内观测到的**最小**原始往返：物理上真实 RTT 不会低于它，
+ * 所以它是「这一次不可能比 minRaw 更快」的下限（仍然保留下限，防窗口不足时显示 0）。
+ * @param {number} rtt 原始往返（ms）
+ * @param {{ lag?: number, minRaw?: number|null, floor?: number }} [opts]
+ * @returns {number} 显示的往返估计（ms，非负整数）
+ */
+export function compensateRtt(rtt, opts = {}) {
+  const raw = Math.max(0, Number(rtt) || 0);
+  const lag = Math.max(0, Number(opts.lag) || 0);
+  const floor = Math.max(0, opts.floor === undefined ? LAG_FLOOR_MS : Number(opts.floor) || 0);
+  const minRaw = Number.isFinite(opts.minRaw) ? Math.max(0, Number(opts.minRaw)) : null;
+  const lower = minRaw == null ? floor : Math.max(floor, minRaw);
+  return Math.round(Math.min(raw, Math.max(raw - lag, lower)));
+}
+
+/**
  * WebSocket URL for the current page (`ws(s)://host/ws`).
  * @param {{protocol: string, host: string}} [loc]
  * @returns {string}
@@ -115,7 +177,9 @@ export class Net {
    * @param {any} [opts.WebSocket] WebSocket constructor (default: globalThis.WebSocket)
    * @param {() => (string|null)} [opts.getToken] reconnect-token provider for `hello`
    * @param {() => ({ noReplace: boolean, claimAt?: number })} [opts.getTokenClaim] local ownership for this hello
+   * @param {(type?: string) => (object|null|Promise<object|null>)} [opts.getAssetCacheReadiness] local entry scan (never used for hello/resume)
    * @param {() => number} [opts.now]
+   * @param {() => number} [opts.clock] monotonic clock for the lag probe / raw-rtt window (default: `monotonicNow`)
    * @param {() => number} [opts.random]
    * @param {{setTimeout: Function, clearTimeout: Function, setInterval: Function, clearInterval: Function}} [opts.timers]
    */
@@ -124,7 +188,9 @@ export class Net {
     this.WS = opts.WebSocket || null;
     this.getToken = typeof opts.getToken === 'function' ? opts.getToken : () => null;
     this.getTokenClaim = typeof opts.getTokenClaim === 'function' ? opts.getTokenClaim : () => null;
+    this.getAssetCacheReadiness = typeof opts.getAssetCacheReadiness === 'function' ? opts.getAssetCacheReadiness : null;
     this.now = opts.now || (() => Date.now());
+    this.clock = opts.clock || monotonicNow;
     this.random = opts.random || Math.random;
     this.timers = opts.timers || {
       setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
@@ -140,9 +206,17 @@ export class Net {
     this.helloName = null;     // name we sent in the hello that got the last welcome
     this.serverName = null;    // name as normalised by the server
     this.playerId = null;
+    this.wireVersion = 0;
+    this._wireDisabled = false; // Decoding failure downgrades this page to JSON on its next full resync.
     this.attempt = 0;          // consecutive failed connection attempts
     this.retryAt = 0;          // epoch ms of the next reconnect attempt (0 = none)
-    this.ping = null;          // last RTT in ms
+    this.ping = null;          // displayed RTT in ms: the minimum of the last five compensated samples
+    this.pingRaw = null;       // the unfiltered round trip of the last probe (the ping tooltip shows it)
+    this._loopLag = 0;         // 主线程滞后估计（ms）：最近 10 秒里消息**典型**要排队多久（窗口中位数），见 _startLagProbe
+    this._lagSamples = [];     // 滞后探针最近 10 秒的样本：[{ t, drift }]（t 为 clock()）
+    this._lagExpected = null;  // 探针本次触发本应落在的时刻（clock()），见 _startLagProbe
+    this._rawSamples = [];     // 最近 10 秒的原始往返样本：[{ t, rtt }]（t 为 clock()）——补偿的下限锚点（minRaw）
+    this._pingSamples = [];    // the last five compensated RTT samples the displayed ping is the minimum of
     this.lastError = null;     // last NetError relevant to the connection (e.g. hello rejected)
     this.clockOffset = 0;
     this.clockSynced = false;
@@ -153,9 +227,12 @@ export class Net {
     this._listeners = new Map();
     this._manualClose = false;
     this._quietSwap = false;   // next connect() keeps the current status (see CLOSE_HELLO_TIMEOUT)
+    this._helloEmergencyBlocked = false; // only refused visitors; match members retain normal reconnect priority
+    this._emergencyRetryAt = 0;
     this._openedAt = 0;
     this._reconnectTimer = null;
     this._pingTimer = null;
+    this._lagTimer = null;
     this._helloTimer = null;
     this._helloRid = null;
     this._helloSentName = null;
@@ -199,6 +276,8 @@ export class Net {
   snapshot() {
     return {
       status: this.status, attempt: this.attempt, retryAt: this.retryAt, ping: this.ping,
+      // the unfiltered round trip of the last probe (the ping tooltip shows it beside `ping`)
+      pingRaw: this.pingRaw ?? null,
       lastError: this.lastError ? { code: this.lastError.code, text: this.lastError.message } : null,
       playerId: this.playerId,
     };
@@ -213,6 +292,7 @@ export class Net {
 
   /** Open the socket (no-op when already open/connecting). Also resumes after close()/replacement. */
   connect() {
+    if (this._helloEmergencyBlocked && this._reconnectTimer && this.now() < this.retryAt) return;
     const quiet = this._quietSwap;
     this._quietSwap = false;
     if (this.ws && (this.ws.readyState === WS_OPEN || this.ws.readyState === WS_CONNECTING)) return;
@@ -330,7 +410,11 @@ export class Net {
 
   _scheduleReconnect() {
     if (this._manualClose) return;
-    const delay = backoffDelay(this.attempt, this.random);
+    // A rejected visitor cannot bypass emergency admission throttling by refocusing the tab.
+    const remaining = this._emergencyRetryAt > this.now() ? this._emergencyRetryAt - this.now() : EMERGENCY_RETRY_MS;
+    const delay = this._helloEmergencyBlocked
+      ? Math.max(EMERGENCY_RETRY_MIN_MS, Math.min(EMERGENCY_RETRY_MS, remaining)) + Math.round(this.random() * EMERGENCY_RETRY_JITTER_MS)
+      : backoffDelay(this.attempt, this.random);
     this.attempt += 1;
     this.retryAt = this.now() + delay;
     this._clearTimer('_reconnectTimer', 'clearTimeout');
@@ -347,8 +431,10 @@ export class Net {
       ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
     }
     this.ws = null;
+    this.wireVersion = 0;
     this._unansweredSince = null;
     this._clearTimer('_pingTimer', 'clearInterval');
+    this._clearTimer('_lagTimer', 'clearInterval');
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
     this._helloSentName = null;
@@ -367,6 +453,7 @@ export class Net {
     if (!this.name) return;
     const rid = this._nextRid();
     const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION };
+    if (!this._wireDisabled) msg.wire = WIRE_VERSION;
     let token = null;
     try { token = this.getToken(); } catch { token = null; }
     if (typeof token === 'string' && token.length > 0 && token.length <= 64) {
@@ -400,8 +487,11 @@ export class Net {
     this.helloName = this._helloSentName;
     this.serverName = typeof msg.name === 'string' && msg.name ? msg.name : this._helloSentName;
     this.playerId = msg.playerId ?? null;
+    this.wireVersion = !this._wireDisabled && msg.wire === WIRE_VERSION ? WIRE_VERSION : 0;
     this.attempt = 0;
     this.lastError = null;
+    this._helloEmergencyBlocked = false;
+    this._emergencyRetryAt = 0;
     if (Number.isFinite(msg.serverNow)) this._addClockSample(msg.serverNow + (this.ping ?? 0) / 2 - this.now(), Infinity);
     this._setStatus('online');
     this._flushQueue();
@@ -412,10 +502,12 @@ export class Net {
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
     this.lastError = new NetError(msg.code, msg.msg, msg.detail);
+    const alreadyBlocked = this._helloEmergencyBlocked;
+    if (msg.code === 'SERVER_EMERGENCY') this._helloEmergencyBlocked = true;
     this._setStatus('connected');
     // Queued requests can't be sent without a session.
     this._failPending('OFFLINE', true);
-    this._emit('helloError', this.lastError);
+    if (msg.code !== 'SERVER_EMERGENCY' || !alreadyBlocked) this._emit('helloError', this.lastError);
   }
 
   // ---- requests --------------------------------------------------------------------------------
@@ -435,6 +527,22 @@ export class Net {
    * @returns {Promise<any>}
    */
   request(t, fields = {}, opts = {}) {
+    const body = fields && typeof fields === 'object' ? fields : {};
+    const establishing = ['connecting', 'handshaking', 'reconnecting'].includes(this.status) && this.name && !this._manualClose;
+    if (this.getAssetCacheReadiness && ASSET_ADMISSION_TYPES.has(t) && !Object.hasOwn(body, 'assetCache')
+      && (this.status === 'online' || establishing) && !validateC2S({ ...body, t })) {
+      const send = (report) => this._request(t, report ? { ...body, assetCache: report } : body, opts);
+      let pending;
+      try { pending = this.getAssetCacheReadiness(t); }
+      catch { return send(null); }
+      // Optional mode stays usable with unsupported/failed local storage; strict mode is checked on the server.
+      if (pending && typeof pending.then === 'function') return Promise.resolve(pending).catch(() => null).then(send);
+      return send(pending);
+    }
+    return this._request(t, body, opts);
+  }
+
+  _request(t, fields = {}, opts = {}) {
     return new Promise((resolve, reject) => {
       if (t === 'hello') { reject(new NetError('BAD_MSG', 'use setName() for hello')); return; }
       const rid = this._nextRid();
@@ -486,7 +594,8 @@ export class Net {
     const ws = this.ws;
     if (!ws || ws.readyState !== WS_OPEN) return false;
     try {
-      ws.send(JSON.stringify(obj));
+      const compact = this.wireVersion === WIRE_VERSION && obj.t !== 'hello';
+      ws.send(JSON.stringify(compact ? encodeWire(obj, 'c2s') : obj));
       return true;
     } catch (err) {
       console.warn('[net] send failed', err);
@@ -537,6 +646,17 @@ export class Net {
       console.warn('[net] dropped non-JSON frame');
       return;
     }
+    if (Array.isArray(msg)) {
+      try {
+        if (this.wireVersion !== WIRE_VERSION) throw new Error('wire not negotiated');
+        msg = decodeWire(msg, 's2c');
+      } catch (error) {
+        console.warn('[net] compact decode failed; reconnecting with JSON', error.message);
+        this._wireDisabled = true;
+        this.reconnectNow();
+        return;
+      }
+    }
     if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.t !== 'string') return;
     const { t } = msg;
     const rid = msg.rid;
@@ -547,6 +667,9 @@ export class Net {
       // Do not publish or persist that stale welcome, even if the server had already accepted it.
       if (this._helloToken !== this.getToken()) { this.reconnectNow(); return; }
       this._onWelcome(msg);
+    } else if (t === 'm.emergency') {
+      this._emergencyRetryAt = msg.active
+        ? (Number.isFinite(msg.retryAt) ? msg.retryAt - this.clockOffset : this.now() + EMERGENCY_RETRY_MS) : 0;
     } else if (t === 'pong') {
       this._onPong(msg);
     } else if (isHelloError) {
@@ -577,9 +700,61 @@ export class Net {
 
   // ---- heartbeat & clock -----------------------------------------------------------------------
 
+  /**
+   * 漂移法采样浏览器主线程滞后（事件循环积压）：一个 100ms 的定时器本该落在 `expected` 上，
+   * 它实际晚了多少（drift = 实际时刻 - 期望时刻）就是这段队列里消息要等的时间。
+   * `expected` 每个 tick 前进 100ms，再向实际时刻收敛 10%，这样一次长阻塞不会被当成永久基线，
+   * 而持续过载时 drift 会稳定维持在「每个 tick 多出来的排队时间」上。
+   * 取最近 10 秒内 drift 的**中位数**作为 _loopLag（lagEstimate）—— 实测往返里多出来的部分正是它：
+   * 主线程被渲染/GC/素材解码占住时，收到的 pong 只能排在队尾，rtt 因此系统性偏大。
+   * 这里不能取最大值：一次极端 tick 的排队时间通常大于这条 pong 实际排队的时间，会把显示值过扣到 0。
+   * 后台标签页的定时器会被浏览器节流（drift 会被放大到秒级），隐藏期间不采样，可见时重新对锚。
+   */
+  _startLagProbe() {
+    this._clearTimer('_lagTimer', 'clearInterval');
+    this._lagSamples = [];
+    this._rawSamples = [];
+    this._lagExpected = null;
+    const clock = () => this.clock();
+    this._lagTimer = this.timers.setInterval(() => {
+      const actual = clock();
+      // 后台/被节流：不采样，回到前台时重新对锚（否则节流造成的大 drift 会把显示值扣成 0）
+      if (globalThis.document?.visibilityState === 'hidden') { this._lagExpected = null; return; }
+      if (this._lagExpected == null) { this._lagExpected = actual + LAG_PROBE_INTERVAL_MS; return; }
+      const drift = Math.max(0, Math.min(actual - this._lagExpected, LAG_PROBE_MAX_DRIFT_MS));
+      const cutoff = actual - LAG_PROBE_WINDOW_MS;
+      const kept = [];
+      for (const s of this._lagSamples) {
+        if (s.t < cutoff) continue;
+        kept.push(s);
+      }
+      kept.push({ t: actual, drift });
+      this._lagSamples = kept;
+      // 原始往返窗口也在同一 tick 里顺手裁剪（它的锚点时间与探针同一个时钟）
+      this._rawSamples = this._rawSamples.filter((s) => s.t >= cutoff);
+      this._loopLag = Math.max(0, Math.round(lagEstimate(kept)));
+      // 期望时刻先走到本 tick，再向实际时刻收敛（收敛让 drift 反映「最近这段平均排队」而不是历史累计）
+      this._lagExpected += LAG_PROBE_INTERVAL_MS;
+      this._lagExpected += (actual - this._lagExpected) * LAG_PROBE_CATCHUP;
+    }, LAG_PROBE_INTERVAL_MS);
+  }
+
+  /** 同一观察窗内最小的原始往返（含刚采样的一次）：补偿的下限锚点；窗口为空时 null。 */
+  _minRawRtt(rtt) {
+    const t = this.clock();
+    const cutoff = t - LAG_PROBE_WINDOW_MS;
+    const kept = this._rawSamples.filter((s) => s.t >= cutoff);
+    kept.push({ t, rtt });
+    this._rawSamples = kept;
+    let min = Infinity;
+    for (const s of kept) if (s.rtt < min) min = s.rtt;
+    return Number.isFinite(min) ? min : null;
+  }
+
   _startHeartbeat() {
     this._clearTimer('_pingTimer', 'clearInterval');
     this._pingTimer = this.timers.setInterval(() => this._heartbeat(), PING_INTERVAL_MS);
+    this._startLagProbe();
   }
 
   _heartbeat() {
@@ -614,7 +789,15 @@ export class Net {
     if (!Number.isFinite(c)) return;
     const rtt = now - c;
     if (!(rtt >= 0 && rtt < 60000)) return;
-    this.ping = Math.round(rtt);
+    // pingRaw keeps the raw round trip of the last probe (the ping tooltip shows it beside the filtered value).
+    this.pingRaw = Math.round(rtt);
+    // 浏览器主线程若被渲染/GC/素材解码占住，pong 的处理会被排到队尾，实测往返因此系统性偏大。
+    // 用独立的事件循环滞后探针（_startLagProbe：最近 10 秒 drift 的**中位数**）扣除这部分，得到接近真实网络的
+    // 延迟估计；再夹在同一观察窗内最小的原始往返（minRaw）与绝对值下限（LAG_FLOOR_MS）之上 —— 补偿再猛也不会
+    // 把显示值打到 0（用户实测过「当前 0 ms（原始 200 ms）」，那不可能）。最后取最近 5 次最小值抑制残差抖动。
+    const adjusted = compensateRtt(rtt, { lag: this._loopLag || 0, minRaw: this._minRawRtt(rtt), floor: LAG_FLOOR_MS });
+    this._pingSamples = [...this._pingSamples, adjusted].slice(-5);
+    this.ping = Math.min(...this._pingSamples);
     if (Number.isFinite(msg.s)) this._addClockSample(msg.s + rtt / 2 - now, rtt);
     this._emit('ping', this.ping);
     this._emit('status', this.snapshot());
@@ -965,4 +1148,11 @@ export function createIdentity(deps = {}) {
 export const identity = createIdentity({ onYield: () => net.reconnectNow(net.helloName || net.name) });
 
 /** Browser connection singleton (created lazily-safe: nothing touches the network until connect()). */
-export const net = new Net({ getToken: () => identity.getToken(), getTokenClaim: () => identity.getTokenClaim() });
+export const net = new Net({ getToken: () => identity.getToken(), getTokenClaim: () => identity.getTokenClaim(),
+  // Optional rooms must stay instant: only the owner's strict admission policy needs a local cache scan.
+  getAssetCacheReadiness: (type) => {
+    const state = assetCache.getState();
+    return state.supported && state.requireAssetCache ? assetCache.admission({ fast: type === 'room.create' }) : null;
+  } });
+net.on('welcome', (message) => assetCache.setRequirement(message.requireAssetCache));
+net.on('lobby.state', (message) => assetCache.setRequirement(message.requireAssetCache));

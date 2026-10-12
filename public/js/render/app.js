@@ -126,6 +126,7 @@ import { TILE_H, TIER_COLORS, COLORS } from './style.js';
 import { loadBoardArt } from './boardArt.js';
 import { ImpostorAtlas } from './impostor.js';
 import { loadThree, loadBoardPack, loadScenePack, webgl2Available, boardArtListed } from './board3d/load.js';
+import { themeForStage } from './board3d/theme.js';
 import { BoardScene } from './board3d/scene.js';
 import { unionAreas } from './board3d/layout.js';
 import { layoutPen, penSignature } from './pen.js';
@@ -139,6 +140,8 @@ import { boardPreference, switchableBox, bandFor, fieldRows, boardArea, viewKind
 import { renderInfo, FORCED_EXIT, showsDeathFx } from './app/info.js';
 import { resolveAssets, makeData, withTimeout, QUALITY_RES, BOARD_RES, releaseGl } from './app/host.js';
 import { t } from '../../../shared/i18n.js';
+import { skinFor } from '../ui/skins.js';
+import { resolutionCap, boardResolutionCap } from '../ui/gameLogic/settings.js';
 
 export { ensurePixi } from './app/pixi.js';
 export { PEN_CAMERA_MS, LEADER_HIT_STYLE, DRAG_HOLD_TILES } from './app/tune.js';
@@ -162,14 +165,28 @@ export async function createFieldView(host, options = {}) {
   signal?.throwIfAborted();
   const assets = resolveAssets(opts.assets);
   const data = makeData(opts.data);
-  const settings = { damageNumbers: true, officialDamageNumbers: false, quality: 'high', ...(opts.settings || {}) };
+  const settings = { damageNumbers: true, officialDamageNumbers: false, quality: 'high', performanceMode: false, ...(opts.settings || {}) };
+  // 性能模式 (设置 → 性能模式, ui/settings.js): 一键降载。玩家自己的 画质 设置保持不动，只让渲染按轻量档跑：
+  //   1) 不上 3D 棋盘 —— 复用「3D 素材/WebGL2 不可用 → 2D 棋盘」的既有分支（want3d 为假，three.js 与整个 3D
+  //      素材包都不会被下载），不是删掉 3D 代码；显式的 `?board=3d`（开发用）仍然照办；
+  //   2) 像素比压到 1（PERF_DPR_CAP，手机 2×/3× 屏上省下的填充率最多）；
+  //   3) 特效/阴影/抗锯齿/冒名顶替走 quality 'low' 档（fx 等子系统读的是 ctx.settings 的活值，改完立刻生效）。
+  const PERF_DPR_CAP = 1;
+  const perfMode = () => settings.performanceMode === true;
+  const viewQuality = () => (perfMode() ? 'low' : settings.quality);
   // the 3D board (three.js + the official art) loads in parallel with everything else
   const boardPref = boardPreference(opts.board);
-  const want3d = boardPref !== '2d' && webgl2Available(boardPref === '3d');
+  const want3d = boardPref !== '2d' && (boardPref === '3d' || !perfMode()) && webgl2Available(boardPref === '3d');
   // three.js (~2 MB) is fetched only when the local-art manifest lists the board atlas (in parallel with the art)
   const artListed = want3d ? boardArtListed(assets).catch(() => false) : Promise.resolve(false);
+  // Board theme: which world this battlefield is dressed in. It must be decided HERE, before the pack is created — the
+  // world textures are baked into the scene at creation and cannot be swapped later, so a stage is played on sand only
+  // when it was loaded as sand from the start (render/board3d/theme.js). `opts.stageId` is the match's own stage (the
+  // game passes it, it knows `m.public.stageId`); `opts.boardTheme` is the dev override (`?theme=` in render-demo).
+  // Neither present → the default world, which is the pre-theme behaviour for every caller.
+  const boardThemeGroup = (typeof opts.boardTheme === 'string' && opts.boardTheme) || themeForStage(opts.stageId);
   const threePromise = artListed.then((ok) => (ok ? loadThree() : null)).catch(() => null);
-  const packPromise = artListed.then((ok) => (ok ? Promise.resolve(assets.ready ? assets.ready() : null).catch(() => null).then(() => loadBoardPack(assets)) : null)).catch(() => null);
+  const packPromise = artListed.then((ok) => (ok ? Promise.resolve(assets.ready ? assets.ready() : null).catch(() => null).then(() => loadBoardPack(assets, boardThemeGroup)) : null)).catch(() => null);
   // the manifest, and the optional local-art manifest in parallel: unit views pick an enemy's local-client model by it
   // (assets.js spineEntry, DESIGN §13 — 灼热源石虫 / 炽焰源石虫); absent or slow, they draw the web models
   await withTimeout(Promise.all([assets.ready ? assets.ready() : null, assets.local ? assets.local() : null]
@@ -180,8 +197,10 @@ export async function createFieldView(host, options = {}) {
   signal?.throwIfAborted();
 
   const size = () => ({ width: Math.max(1, host.clientWidth || 1), height: Math.max(1, host.clientHeight || 1) });
-  const dpr = () => Math.min(globalThis.devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2);
-  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, BOARD_RES[settings.quality] || 2);
+  // 分辨率: an explicit choice caps the pixel ratio on its own, independent of 画质 (which also decides the board's
+  // expensive features) — 'auto' keeps the quality table, i.e. upstream behaviour. 性能模式 caps it at 1 (PERF_DPR_CAP).
+  const dpr = () => Math.min(globalThis.devicePixelRatio || 1, perfMode() ? PERF_DPR_CAP : (resolutionCap(settings.resolution) ?? (QUALITY_RES[settings.quality] || 2)));
+  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, perfMode() ? PERF_DPR_CAP : (boardResolutionCap(settings.resolution) ?? (BOARD_RES[settings.quality] || 2)));
   const s0 = size();
   // Construction is synchronous until the complete view can own cancellation. If setup throws,
   // dispose only the resources acquired by this attempt, never another view's host contents.
@@ -193,7 +212,7 @@ export async function createFieldView(host, options = {}) {
   const app = new P.Application({
     // MSAA only where it pays: dense (DPR ≥ 1.5) screens are sharp enough without it and it would cost 4× the fill
     // transparent: the 3D board canvas shows through (the 2D board paints an opaque backdrop itself)
-    width: s0.width, height: s0.height, antialias: opts.antialias ?? (settings.quality === 'high' && (globalThis.devicePixelRatio || 1) < 1.5), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
+    width: s0.width, height: s0.height, antialias: opts.antialias ?? (viewQuality() === 'high' && (globalThis.devicePixelRatio || 1) < 1.5), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
     resolution: dpr(), autoDensity: true, powerPreference: 'high-performance',
   });
   const canvas = app.view;
@@ -381,7 +400,7 @@ export async function createFieldView(host, options = {}) {
       host.insertBefore(c3, canvas);
       board3dCanvas = c3;
       const b = new BoardScene(THREE, pack, {
-        canvas: c3, antialias: settings.quality !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: settings.quality !== 'low',
+        canvas: c3, antialias: viewQuality() !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: viewQuality() !== 'low',
       });
       const sz = size();
       b.resize(sz.width, sz.height, boardDpr());
@@ -440,11 +459,14 @@ export async function createFieldView(host, options = {}) {
     }, delay);
   }
   // Attach the board only after synchronous setup completes; enable3d also guards late arrivals.
-  const boardReady = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack ? enable3d(THREE, pack) : false), () => false);
+  // Attach the board only after synchronous setup completes; enable3d also guards late arrivals.
+  // `!perfMode()`: 玩家可能在 three.js / 素材包还在下载时打开性能模式（设置里一键切），那一次迟到的 3D 棋盘
+  // 不能因为「创建时没开」就把 3D 装回来 —— 显式的 setBoardMode('3d')（开发用）不受这里影响。
+  const boardReady = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack && !perfMode() ? enable3d(THREE, pack) : false), () => false);
   let boardRetry = null;
   function retryBoard() {
     if (!want3d || destroyed || board3d || recover.off || recover.timer || boardRetry) return;
-    boardRetry = Promise.all([loadThree(), loadBoardPack(assets)])
+    boardRetry = Promise.all([loadThree(), loadBoardPack(assets, boardThemeGroup)])
       .then(([THREE, pack]) => enable3d(THREE, pack), () => false)
       .finally(() => { boardRetry = null; });
   }
@@ -686,9 +708,14 @@ export async function createFieldView(host, options = {}) {
     const pick = chess && chess.isDiy ? diyPicks[chess.baseId || chess.chessId] : null;
     const dr = pick ? data.diy(piece.id, pick) : null;
     const rec = si || dr || chess;
+    // 干员皮肤 (docs/SKINS.md): the server puts the choice on the piece view; the local store covers the player's own
+    // pieces while a room is being set up (or in solo, before the first m.public) — a 补位 / 自选 body keeps the slot's
+    // key, so both bases are tried
+    const baseId = chess?.baseId || piece.id;
     return {
       kind: 'op', side: 'ally', defId: piece.id,
       spine: rec?.assets?.spine || rec?.charId || null, avatar: rec?.assets?.avatar || rec?.charId || null,
+      skin: piece.skin ?? skinFor(baseId) ?? skinFor(piece.id) ?? null,
       tier: chess?.tier || piece.tier || 1, golden: !!(piece.golden || chess?.isGolden), dir,
       ...(si ? { standInFor: si.standInFor } : null),
       ...(dr ? { diy: { charId: pick.charId, skillIndex: pick.skillIndex ?? null, uniEquipId: pick.uniEquipId ?? null } } : null),
@@ -769,7 +796,7 @@ export async function createFieldView(host, options = {}) {
       e.key = key;
       const info = pieceInfo(e.piece, e.area);
       // (the model is part of it: a piece whose body changes — a merge, an own 补位 / 自选 setting arriving — is rebuilt)
-      const sig = `${info.kind}|${info.defId}|${info.golden ? 1 : 0}|${info.spine || ''}`;
+      const sig = `${info.kind}|${info.defId}|${info.golden ? 1 : 0}|${info.spine || ''}|${info.skin || ''}`;
       let v = views.get(key);
       if (v && v._sig !== sig) { dropView(key); v = null; }
       const w = slotWorld(e);
@@ -840,7 +867,7 @@ export async function createFieldView(host, options = {}) {
       const info = u && Number.isInteger(u.uid) ? renderInfo({ ...u, id: `m:${u.uid}` }) : null;
       if (!info) continue;
       keep.add(info.id);
-      const sig = `${info.defId}|${info.golden ? 1 : 0}|${info.spine || ''}|${info.x},${info.y}|${info.dir || ''}|${(info.items || []).join(',')}`;
+      const sig = `${info.defId}|${info.golden ? 1 : 0}|${info.spine || ''}|${info.skin || ''}|${info.x},${info.y}|${info.dir || ''}|${(info.items || []).join(',')}`;
       let v = views.get(info.id);
       if (v && v._sig !== sig) { dropView(info.id); v = null; }
       if (v) continue;
@@ -1671,12 +1698,12 @@ export async function createFieldView(host, options = {}) {
   function pickClipping() {
     let n = 0;
     for (const v of views.values()) if (v.actor && v.actor.clipped && v.alive !== false) n++;
-    return settings.quality === 'high' && n <= 1;
+    return viewQuality() === 'high' && n <= 1;
   }
   function pickImpostorInterval() {
     let n = 0;
     for (const v of views.values()) if (v.actor && v.spineReady) n++;
-    const q = settings.quality;
+    const q = viewQuality();
     const base = (q === 'low' ? 12 : q === 'medium' ? 26 : 44) / (1 + loadLevel);
     if (n <= base) return 0;
     // a struggling device (load level ≥ 2) may refresh a big crowd more rarely (10 Hz at worst)
@@ -1906,11 +1933,25 @@ export async function createFieldView(host, options = {}) {
     },
     setSettings(s) {
       if (!s || typeof s !== 'object') return;
-      const q = settings.quality;
+      const q = viewQuality();     // 渲染此刻真正在用的档位（性能模式开着时是 'low'）
+      const res0 = dpr();          // 像素比（性能模式也会影响它）
       if (typeof s.damageNumbers === 'boolean') settings.damageNumbers = s.damageNumbers;
       if (typeof s.officialDamageNumbers === 'boolean') settings.officialDamageNumbers = s.officialDamageNumbers;
+      if (typeof s.performanceMode === 'boolean') settings.performanceMode = s.performanceMode;
       if (s.quality === 'high' || s.quality === 'medium' || s.quality === 'low') settings.quality = s.quality;
-      if (q !== settings.quality) { board3d?.setQuality?.(settings.quality); resize(); }
+      if (s.resolution !== settings.resolution) settings.resolution = s.resolution;
+      // 性能模式: 打开时立刻退回 2D 棋盘（不新建任何下载）；关掉时若 3D 素材已在内存里就直接恢复，
+      // 否则留在 2D —— 下一次创建视图（下一回合 / 重进对局）会按当前设置重新决定，避免在对局中拉几 MB 的 3D 素材。
+      if (typeof s.performanceMode === 'boolean') {
+        if (perfMode()) { recover.off = true; clearTimeout(recover.timer); disable3d(); }
+        else {
+          recover.off = false; recover.tries = 0;
+          if (!board3d && recover.THREE && recover.pack) enable3d(recover.THREE, recover.pack);
+        }
+      }
+      // 分辨率 / 画质 / 性能模式都会重新钳制像素比，所以画布必须 resize（和以前一样走同一条路径）
+      if (q !== viewQuality()) { board3d?.setQuality?.(viewQuality()); resize(); }
+      else if (res0 !== dpr()) resize();
     },
     resize,
     /** Dev / settings: switch the board layer ('3d' loads three.js + the art when available; '2d' = atlas board). */
@@ -1956,6 +1997,8 @@ export async function createFieldView(host, options = {}) {
         fps: Math.round(fps * 10) / 10, frameMs: Math.round(frameMs * 100) / 100, cpuMs: Math.round(cpuMs * 100) / 100, renderMs: Math.round(renderMs * 100) / 100, mode, units: views.size, impostor: impInterval, impostorAtlas: { ...impostors.stats }, boardArt: !!tiles.atlas.art,
         board3d: board3d ? { on: true, ...board3d.stats(), losses: recover.count } : { on: false, error: board3dError, recovering: !!recover.timer, losses: recover.count },
         pen: penViews.size, prepField: prepXf.kind === 'bossPrep' ? prepXf.side : null, lod: loadLevel, culled: culledCount,
+        // 性能模式: 供「设置 → 问题反馈」的诊断与现场核对（开着时 board3d.on 必为 false、渲染档位为 'low'）
+        performance: { on: perfMode(), dpr: dpr(), quality: viewQuality() },
         ...fx.counts, spine: assets.spine?.stats ? assets.spine.stats() : null, renderT: interp.renderT, rate: interp.rate,
         buffered: interp.size, camera: cam.params(),
       };

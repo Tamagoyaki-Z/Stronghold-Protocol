@@ -79,12 +79,14 @@ import { ChoiceOverlay } from '../ui/choiceOverlay.js';
 import { EnemyDrawer } from '../ui/enemyDrawer.js';
 import { Ticker } from '../ui/ticker.js';
 import { EmoteWheel } from '../ui/emotes.js';
+import { MatchChatButton, MatchChatHost } from '../ui/matchChat.js';
+import { chatStore, chatActions } from '../matchChat.js';
 import { EffectsList } from '../ui/effectsList.js';
 import { CombatHud } from '../ui/combatHud.js';
 import { SettingsModal, settingsStore } from '../ui/settings.js';
 import { ExitModal, AwayOverlay, awayStore } from '../ui/matchChrome.js';
 import { openGuide } from '../ui/guide.js';
-import { actions, onRefreshBusy } from '../ui/gameActions.js';
+import { actions, onRefreshBusy, onPendingChange, pendingKey, pendingKeys } from '../ui/gameActions.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
 import { Underframe, underframeRect, TempRowNotice } from '../ui/underframe.js';
 import { StandInTags } from './game/standInTags.js';
@@ -106,7 +108,7 @@ import { BriefingScreen } from './briefing.js';
 import { BandDraftScreen } from './bandDraft.js';
 import { ResultScreen } from './result.js';
 import { net } from '../net.js';
-import { store, useStore, shallowEqual, serverNow, isSpectating } from '../store.js';
+import { store, useStore, shallowEqual, serverNow, isSpectating, emergencyActive, matchClockNow } from '../store.js';
 import { battleRunner } from '../battle/runner.js';
 import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCamera, sidesOf, resumedWatch, followedScout } from '../battle/observe.js';
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
@@ -119,6 +121,9 @@ import { keepEarly, audioEarly } from './game/early.js';
 import { MatchEnded, PausedOverlay } from './game/overlays.js';
 import { inspectRange } from './game/range.js';
 import { t, tParts } from '../../../shared/i18n.js';
+
+/** The `pending` snapshot when 乐观界面反馈 is off (or nothing is in flight): every lookup answers false. */
+const EMPTY_PENDING = Object.freeze({ keys: new Set(), has: () => false });
 
 /** Router for the in-match screens. */
 export function GameScreen() {
@@ -142,7 +147,9 @@ export function GameScreen() {
   else body = html`<${MatchScreen} />`;
   return html`${body}
     ${(away || autoplay) && !hasResult && mode !== 'result' && !ended ? html`<${AwayOverlay} />` : null}
-    ${ended && !hasResult && mode !== 'result' ? html`<${MatchEnded} />` : null}`;
+    ${(away || autoplay) && !hasResult && mode !== 'result' && !ended ? html`<${MatchChatButton} class="mchat-away-entry" />` : null}
+    ${ended && !hasResult && mode !== 'result' ? html`<${MatchEnded} />` : null}
+    ${!hasResult && mode !== 'result' && !ended ? html`<${MatchChatHost} phase=${pub.phase} away=${away || autoplay} />` : null}`;
 }
 
 // ---- match screen ----------------------------------------------------------------------------------------
@@ -157,7 +164,10 @@ function MatchScreen() {
   const field = useStore((s) => s.match.field);
   const myId = useStore((s) => s.me.playerId);
   const conn = useStore((s) => s.connection, shallowEqual);
+  const emergency = useStore(emergencyActive);
   const emotes = useStore((s) => s.emotes);
+  const chatOpen = useStore((s) => s.open, Object.is, chatStore);
+  const hasChat = useStore((s) => !!s.matchId, Object.is, chatStore);
   const roomSolo = useStore((s) => s.room?.mode === 'solo');
   const spectator = useStore((s) => isSpectating(s.room, s.me.playerId));
   // the room's spectator seats for the top bar's 观战席 capsule (ui/hud.js SpectatorPill; GitHub #120): room.state keeps coming
@@ -171,7 +181,8 @@ function MatchScreen() {
   const hostRef = useRef(null);
   const barRef = useRef(null);
   const hudElRef = useRef(null);                         // .gm__hud (inside the safe-area insets: the panels' frame)
-  const { view, kind: viewKind } = useFieldView(hostRef);
+  // 地图主题 (board3d/theme.js): the view bakes its world textures at creation, so it is told the stage up front.
+  const { view, kind: viewKind } = useFieldView(hostRef, pub?.stageId || null);
 
   const [watching, setWatching] = useState(null);        // fieldId the player chose to watch (null = home)
   const [watchWho, setWatchWho] = useState(null);        // { fieldId, playerId }: the teammate picked with 前往查看
@@ -189,6 +200,9 @@ function MatchScreen() {
   useEffect(() => onRefreshBusy(setRefreshBusy), []);
   const [rewardMin, setRewardMin] = useState(false);
   const [emoteOpen, setEmoteOpen] = useState(false);
+  useEffect(() => {
+    if (chatOpen) { setEmoteOpen(false); setDetail(null); setBondOpen(null); setDrawer(null); }
+  }, [chatOpen]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitOpen, setExitOpen] = useState(false);
   const [drag, setDrag] = useState(null);                // { uid, kind, id } while dragging a piece
@@ -208,6 +222,19 @@ function MatchScreen() {
   const [replace, setReplace] = useState(null);          // equip-replace dialog: { request, resolve }
   const [pauseBusy, setPauseBusy] = useState(false);
   const [armedCard, setArmedCard] = useState(null);     // the shop bar's armed card { kind, id } (merge tile cue)
+  // ---- optimistic interface feedback (plan A, ui/gameActions.js) ---------------------------------------------------
+  // `pending` is a snapshot of the intents the server has not answered yet. It only ever drives a *visual* held
+  // state (dimmed / disabled / sweep bar): no authoritative value is derived from it, and the frame still owns
+  // every number on screen. `optimisticFeedback` (设置, default ON) turns the markers off — off, `pending` is empty
+  // and every component renders exactly what it rendered before this feature existed.
+  const optimistic = useStore((s) => s.optimisticFeedback !== false, Object.is, settingsStore);
+  const [pendTick, setPendTick] = useState(0);
+  useEffect(() => onPendingChange(() => setPendTick((n) => n + 1)), []);
+  const pending = useMemo(() => {
+    if (!optimistic) return EMPTY_PENDING;
+    const keys = pendingKeys();
+    return { keys, has: (t, fields) => keys.has(pendingKey(t, fields)) };
+  }, [pendTick, optimistic]);
   const cc = isClientCombat(pub);
   const battleState = useStore((s) => s.match.battle, shallowEqual); // local battle runner (client-side combat)
 
@@ -227,17 +254,18 @@ function MatchScreen() {
   const scoutBandOwner = scoutPid ? (players.find((p) => p.playerId === scoutPid)?.name || null) : null;
   const personalChoice = !spectator && alive ? normalizePersonalChoice(pub, priv, myId) : null;
   const hasPersonalChoice = !!personalChoice;
-  const editable = phase === PHASE.PREP && !!priv && alive && !priv.ready && !watchingOther && !hasPersonalChoice;
+  const editable = !emergency && phase === PHASE.PREP && !!priv && alive && !priv.ready && !watchingOther && !hasPersonalChoice;
   const showShop = !!priv && alive && (phase === PHASE.PREP || phase === PHASE.SP_DRAFT || phase === PHASE.ROUND_START) && !watchingOther;
   const layersDisabled = phase === PHASE.UNITE || isBossPhase(phase);
-  const sp = phase === PHASE.SP_DRAFT ? normalizeSp(pub?.sp, players) : null;
-  const total = phaseTotalSeconds(pub, gd.config, myId);
+  const sp = phase === PHASE.SP_DRAFT ? normalizeSp(pub?.sp, players, myId, pub?.poolGroups) : null;
+  const total = sp?.groups.length ? sp.turnSeconds : phaseTotalSeconds(pub, gd.config, myId);
+  const clockPub = sp?.groups.length ? { ...pub, deadline: sp.ownGroupId != null && !sp.untimed && !sp.done ? sp.turnDeadline : 0 } : pub;
   // solo pause: offered in the own battle; while m.public.paused every HUD clock stops at the pause moment
   const paused = isPaused(pub);
   const pauseSeenRef = useRef(null);
   if (!paused) pauseSeenRef.current = null;
   else if (pauseSeenRef.current == null) pauseSeenRef.current = serverNow();
-  const frozenAt = paused ? frozenNow(pub, serverNow(), pauseSeenRef.current) : null;
+  const frozenAt = emergency ? matchClockNow() : paused ? frozenNow(pub, serverNow(), pauseSeenRef.current) : null;
   // live LP (user playtest #3 item 2): the own normal battle's counted leaks — the local runner's count (authoritative
   // or display replica) and the server's m.public players[].pendingLp, whichever is further (both only grow during a
   // round; a display replica stands still while the player watches a teammate's field, the server's count then moves
@@ -734,11 +762,11 @@ function MatchScreen() {
   }, [battleState?.battleId, battleState?.loading, !!pub]);
 
   // timer ticks (≤ 10 s) while the player still has something to do
-  const cd = countdownState(pub?.deadline, serverNow(), total);
-  useTicker(cd.remain != null && cd.remain <= 10 ? 1000 : 0);
+  const cd = countdownState(clockPub?.deadline, matchClockNow(), total);
+  useTicker(!emergency && cd.remain != null && cd.remain <= 10 ? 1000 : 0);
   const lastTick = useRef(null);
   useEffect(() => {
-    if (cd.remain == null || cd.remain > 10 || cd.remain === lastTick.current) return;
+    if (emergency || cd.remain == null || cd.remain > 10 || cd.remain === lastTick.current) return;
     lastTick.current = cd.remain;
     const busyPrep = phase === PHASE.PREP && priv && !priv.ready && alive;
     const myPick = sp && (solo || sp.turnPid === myId) && !sp.pickOf.has(myId);
@@ -771,7 +799,8 @@ function MatchScreen() {
 
   // emote bubbles (and a sound for teammates' emotes)
   const bubbleMs = (gd.config?.timers?.chatBubble ?? 3) * 1000;
-  const bubbles = activeBubbles(emotes, Date.now(), bubbleMs);
+  const emoteNow = Date.now();
+  const bubbles = activeBubbles(emotes, emoteNow, bubbleMs);
   useTicker(bubbles.size ? 500 : 0); // re-render only while a bubble is showing (to expire it)
   const lastEmote = useRef(emotes.length ? emotes[emotes.length - 1].seq : 0);
   useEffect(() => {
@@ -1428,7 +1457,7 @@ function MatchScreen() {
   // bonds this mode never activates (标准: 10 of 23, 奥术 among them) — shown 本局禁用 on cards, chips and the popup
   const offBonds = modeOffBonds(getMode(pub?.modeId));
 
-  return html`<div class=${cx('screen', 'gm', `gm--${mode}`, drag && 'is-dragging', collapsed && 'is-collapsed', (sp || hasPersonalChoice) && 'has-sp', pen && 'is-pen', readyWhy && 'has-readywhy')}
+  return html`<div class=${cx('screen', 'gm', `gm--${mode}`, hasChat && 'has-chat', spectator && 'is-spectator', drag && 'is-dragging', collapsed && 'is-collapsed', (sp || hasPersonalChoice) && 'has-sp', pen && 'is-pen', readyWhy && 'has-readywhy')}
       data-camera=${pen ? 'pen' : camKind}>
     <div class="gm__field" ref=${hostRef} onContextMenu=${(e) => e.preventDefault()}></div>
     ${viewKind === 'loading' ? html`<div class="gm__loading"><${Spinner} label="LOADING FIELD" /></div>` : null}
@@ -1438,13 +1467,14 @@ function MatchScreen() {
     ${showPrep && view && viewKind !== 'loading' && priv && !pen ? html`<${StandInTags} view=${view} priv=${priv} getChess=${gd.chess} backups=${gd.backups} diyData=${{ chess: data.get('chess'), backups: data.get('backups') }} />` : null}
 
     <div class="gm__hud" ref=${hudElRef}>
-      <${TopBar} pub=${pub} priv=${priv} conn=${conn} hud=${hud} total=${total} drawer=${drawer}
+      <${TopBar} pub=${clockPub} priv=${priv} conn=${conn} hud=${hud} total=${total} drawer=${drawer}
         onExit=${() => setExitOpen(true)} onDrawer=${(t) => setDrawer((d) => (d ? null : t))} onReady=${toggleReady}
-        readyBusy=${readyBusy} readyCount=${readyCount} playerCount=${solo ? 1 : aliveCount}
+        readyBusy=${readyBusy} readyPending=${readyBusy && optimistic} readyCount=${readyCount} playerCount=${solo ? 1 : aliveCount}
         pen=${pen} penAvail=${penAvail} onPen=${togglePen} config=${gd.config} frozenAt=${frozenAt}
         pause=${canPause || paused ? { show: canPause, paused, busy: pauseBusy, onToggle: () => togglePause(!paused) } : null}
         live=${liveLpNow} spectator=${spectator}
-        spectators=${specFacts.list} myId=${myId} isHost=${specFacts.isHost} onRemoveSpectator=${removeSpectator} />
+        spectators=${specFacts.list} myId=${myId} isHost=${specFacts.isHost} onRemoveSpectator=${removeSpectator}
+        onUniteSkipVote=${actions.uniteSkipVote} />
 
       <div class="gm__bonds">
         <button type="button" class="bonds-toggle" aria-expanded=${!bondsCollapsed} aria-controls="match-bond-strip"
@@ -1463,7 +1493,8 @@ function MatchScreen() {
         </div>
       </div>
 
-      <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} bubbles=${bubbles} onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
+      <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} bubbles=${bubbles} emotes=${emotes} emoteNow=${emoteNow} emoteTtl=${bubbleMs}
+        onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
         self=${Number.isFinite(priv?.lp) ? { lp: priv.lp, pending: liveLpNow.pending, unite: liveLpNow.unite, left: liveLpNow.left } : null}
         observe=${cc ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null} />
 
@@ -1481,7 +1512,7 @@ function MatchScreen() {
         onDetailClose=${() => setDetail((d) => (d?.kind === 'chess' || d?.kind === 'item' ? null : d))}
         onRefuse=${(reason) => { toast(reason, 'warn'); audio.sfx('error', { volume: 0.5 }); }}
         reward=${phase === PHASE.PREP && !rewardMin ? priv?.shop?.rewardOffer || null : null}
-        onReward=${(i) => actions.reward(i)} onRewardLater=${() => setRewardMin(true)} onArm=${setArmedCard} />` : null}
+        onReward=${(i) => actions.reward(i)} onRewardLater=${() => setRewardMin(true)} onArm=${setArmedCard} pending=${pending} />` : null}
 
       ${phase === PHASE.PREP && priv?.shop?.rewardOffer ? html`<${RewardOverlay} priv=${priv} minimized=${rewardMin || collapsed}
         onMinimize=${(m) => { setRewardMin(m); if (!m) setCollapsed(false); }} />` : null}
@@ -1497,7 +1528,8 @@ function MatchScreen() {
       <${Ticker} />
 
       <div class="gm__corner">
-        ${spectator ? null : html`<${EmoteWheel} open=${emoteOpen} onToggle=${setEmoteOpen} onSend=${(id) => actions.emote(id)} disabled=${conn.status !== 'online'} />`}
+        <${MatchChatButton} class="gm__chat" onBeforeOpen=${() => { setEmoteOpen(false); setDetail(null); setBondOpen(null); setDrawer(null); }} />
+        ${spectator ? null : html`<${EmoteWheel} open=${emoteOpen} onToggle=${(on) => { if (on) chatActions.setOpen(false); setEmoteOpen(on); }} onSend=${(id) => actions.emote(id)} disabled=${conn.status !== 'online'} />`}
         <button type="button" class="gm__gear" aria-label=${t('设置')} title=${t('设置')} onClick=${() => setSettingsOpen(true)}><${GIcon} name="gear" /></button>
         <button type="button" class="gm__gear gm__guide" aria-label=${t('玩法说明')} title=${t('玩法说明')} onClick=${() => openGuide(0)}><${Icon} name="book" /></button>
         <${FullscreenButton} class="gm__gear gm__fs" />
@@ -1522,8 +1554,13 @@ function MatchScreen() {
         onRetreat=${retreatSel} onSell=${sellSel} onDestroy=${sellSel} />` : null}
     </div>
 
-    ${sp ? html`<${ChoiceOverlay} pub=${pub} sp=${sp} myId=${myId} solo=${solo} busyIdx=${spBusy} total=${total}
-      onPick=${async (i) => { setSpBusy(i); await actions.choice(i); setSpBusy(null); }} />` : null}
+    ${sp ? html`<${ChoiceOverlay} pub=${pub} sp=${sp} myId=${myId} solo=${solo} busyToken=${spBusy} total=${total}
+      onPick=${async (i, opts = {}) => {
+        const token = { idx: i, draftId: opts.draftId, groupId: opts.groupId };
+        setSpBusy(token);
+        await actions.choice(i, opts);
+        setSpBusy((current) => current === token ? null : current);
+      }} />` : null}
     ${personalChoice ? html`<${ChoiceOverlay} key=${personalChoice.id} pub=${pub} sp=${personalChoice} myId=${myId} solo=${solo} personal=${true}
       busyIdx=${personalBusy?.choiceId === personalChoice.id ? personalBusy.idx : null} total=${total}
       onPick=${async (i) => {

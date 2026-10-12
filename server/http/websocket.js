@@ -2,7 +2,7 @@
 //
 //   * session wiring: SessionRegistry (reconnect tokens) → Lobby (rooms, server/lobby.js) → Network (the socket
 //     protocol, server/net.js), built from the startServer() options (config.js decides which go where);
-//   * WebSocket (ws) at /ws, maxPayload 64 KB, no per-message deflate → Network.handleConnection. Refused at the
+//   * WebSocket (ws) at /ws, maxPayload 64 KB after inflation, permessage-deflate → Network.handleConnection. Refused at the
 //     upgrade: any other path 404; per-network socket limit for internet clients (maxConnectionsPerAddr, see net.js
 //     clientAddress; local/LAN peers are exempt) 429; server full (maxConnections) or shutting down 503.
 
@@ -14,6 +14,14 @@ import { netOptionsFrom, lobbyOptionsFrom } from './config.js';
 
 /** Inbound WebSocket frame limit (DESIGN §8). */
 export const WS_MAX_PAYLOAD = 64 * 1024;
+
+// RFC 7692 raw DEFLATE. Retaining the outbound 32 KiB dictionary exploits repeated views; ws bounds global zlib work.
+// Incoming clients do not retain context, and maxPayload still bounds decompressed input. No custom browser inflater.
+export const WS_COMPRESSION = Object.freeze({
+  serverNoContextTakeover: false, clientNoContextTakeover: true,
+  serverMaxWindowBits: 15, concurrencyLimit: 4, threshold: 256,
+  zlibDeflateOptions: Object.freeze({ level: 6, memLevel: 7 }),
+});
 
 /**
  * The session stack of one server.
@@ -37,7 +45,8 @@ export function createSessionStack(opts, { data, log }) {
  * @returns {WebSocketServer}
  */
 export function attachWebSocket(server, { network, log }) {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD, perMessageDeflate: false, clientTracking: false });
+  const compression = process.env.SP_WS_DEFLATE === '0' ? false : { ...WS_COMPRESSION };
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD, perMessageDeflate: compression, clientTracking: false });
   wss.on('connection', (ws, req) => network.handleConnection(ws, req));
   wss.on('error', (e) => log.error('[ws] server error', e));
 

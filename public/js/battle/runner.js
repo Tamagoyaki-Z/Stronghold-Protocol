@@ -10,7 +10,8 @@
 //     (`snap` = b.snap frame from battle.snapshot(), `ev` = b.ev frame from battle.drainEvents()) and publishes the
 //     field meta (m.field shape) into store.match.field so the game screen enters the battle,
 //   * when authoritative: reports b.progress (~1 Hz; boss fields 4 Hz with the shared-pool damage and the LP meter)
-//     and b.result (compactResult) at the end; applies b.pool (LocalBossPool.sync) and b.end (forceEnd / takeover),
+//     and b.result (compactResult) at the end, or b.yield for an oversized result; applies b.pool (LocalBossPool.sync)
+//     and b.end (forceEnd / takeover),
 //   * keeps an authoritative battle running while the tab is hidden (a 250 ms interval pump; browsers throttle it to
 //     ~1 Hz, the bounded fast-forward absorbs that); the server deadline + takeover cover anything worse.
 // A frame that fast-forwards (catch-up) passes on only the state-bearing events (keepsState: spawns, deaths, deploys,
@@ -70,10 +71,12 @@
 // (test/match/runner.test.js and test/match/runner-pending.test.js drive it under Node).
 
 import { net as appNet } from '../net.js';
-import { store as appStore } from '../store.js';
-import { unitStatsEntry, fxForm } from '../../../shared/protocol.js';
+import { store as appStore, emergencyActive } from '../store.js';
+import { unitStatsEntry, fxForm, RESULT_LIMITS } from '../../../shared/protocol.js';
+import { MAX_SEATS } from '../../../shared/constants.js';
 import { spectateEffects } from './observe.js';
 import { recordError, setBattleSource } from '../diag.js';
+import { runtimeURL, runtimeCacheMode } from '../runtime.js';
 
 const TICK = 1 / 30;
 /** Fast-forward budget per frame (ticks) when far behind. */
@@ -116,7 +119,7 @@ export function compactHeld(list) {
 export const SIM_DATA_FILES = Object.freeze(['chess', 'enemies', 'tokens', 'stages', 'waves', 'bonds', 'items', 'garrisons', 'bands', 'effects', 'backups']);
 
 /** Request failures after which a b.result counts as never delivered (re-sent on resume / b.start). */
-export const LOST_RESULT_CODES = Object.freeze(['DISCONNECTED', 'OFFLINE', 'TIMEOUT']);
+export const LOST_RESULT_CODES = Object.freeze(['DISCONNECTED', 'OFFLINE', 'TIMEOUT', 'SERVER_EMERGENCY']);
 
 /** Ticks per frame at a speed (same cap as the server pacing: server/match/fields.js maxTicksPerInterval). */
 export const ticksPerFrameCap = (speed) => Math.max(8, Math.ceil((Number(speed) || 2) * 4));
@@ -146,11 +149,12 @@ function deepFreeze(root) {
  */
 export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetchFn = (...a) => globalThis.fetch(...a) } = {}) {
   const [spec, simdata, support] = await Promise.all([
-    import(`${base}spec.js`), import(`${base}simdata.js`), import(`${base}content/support/index.js`),
+    import(runtimeURL(`${base}spec.js`)), import(runtimeURL(`${base}simdata.js`)), import(runtimeURL(`${base}content/support/index.js`)),
   ]);
   const fetchOnce = async (n) => {
     try {
-      const res = await fetchFn(`${dataBase}${n}.json`, { cache: 'no-cache' });
+      const url = runtimeURL(`${dataBase}${n}.json`);
+      const res = await fetchFn(url, { cache: runtimeCacheMode(url) });
       return res && res.ok ? await res.json() : null;
     } catch { return null; }
   };
@@ -216,6 +220,7 @@ export function createBattleRunner(deps) {
   let lastPool = null;
   /** solo pause: the runner clock's instant when m.public.paused turned true (null while running) */
   let pausedAt = null;
+  let emergencyFrozen = false;
   /** a normal field's leak count (or a battle's bond layers) changed since the last publishState() */
   let leaksDirty = false;
   const stats = { ticks: 0, stepMs: 0, maxFrameMs: 0, catchups: 0, errors: 0, battles: 0, frames: 0 };
@@ -268,7 +273,7 @@ export function createBattleRunner(deps) {
     if (!e) return loading ? { loading: true, battleId: loading.battleId, fieldId: loading.fieldId, kind: loading.kind, leaks: leakMap(), uniteLeft: uniteLeftMap(), bondLayers: layerMap() } : null;
     return {
       battleId: e.battleId, fieldId: e.fieldId, kind: e.kind, authoritative: e.authoritative, watch: e.watch,
-      done: e.done, own: e.own, members: e.members.slice(), loading: !!loading, speed: e.speed, paused: pausedAt != null,
+      done: e.done, own: e.own, members: e.members.slice(), loading: !!loading, speed: e.speed, paused: pausedAt != null, emergencyFrozen,
       leaks: leakMap(), uniteLeft: uniteLeftMap(), bondLayers: layerMap(),
     };
   }
@@ -460,8 +465,8 @@ export function createBattleRunner(deps) {
       }
     } else {
       msg.leaks = Math.min(1e6, p.leaks);
-      // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 4 players)
-      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
+      // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 20 players)
+      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, MAX_SEATS));
     }
     try { net.send('b.progress', msg); } catch { /* offline */ }
   }
@@ -474,45 +479,54 @@ export function createBattleRunner(deps) {
       progress(e, true);
       e.resultSent = true;
       let result = null;
+      let wire = null;
       try {
-        result = e.sim.spec.compactResult(e.battle.result());
-        // an oversized frame would close the socket at the very end of the battle (64 KB inbound limit)
-        if (typeof e.sim.spec.fitResult === 'function') result = e.sim.spec.fitResult(result, { bossLike: bossLike(e), battleId: e.battleId });
+        const raw = e.battle.result();
+        const tooManyEntries = Object.keys(raw.perPlayer || {}).length > RESULT_LIMITS.players
+          || Object.values(raw.perPlayer || {}).some((p) => (p?.leaked?.length || 0) > RESULT_LIMITS.leaked)
+          || (raw.unspawned?.length || 0) > RESULT_LIMITS.unspawned;
+        result = e.sim.spec.compactResult(raw);
+        // The server must see every surviving enemy. A compactResult list cap or an oversized frame would otherwise
+        // silently undercharge a leaker, or close the socket at the 64 KB inbound limit.
+        wire = tooManyEntries ? null : e.sim.spec.fitResult(result, { bossLike: bossLike(e), battleId: e.battleId });
       } catch (err) { console.warn('[runner] result failed', err); recordError('runner', err, 'result failed'); }
-      if (result) {
-        e.result = result;
+      e.result = wire || result;
+      e.deliveryType = wire ? 'b.result' : 'b.yield';
+      if (e.result) {
         // the view answers with the settlement voice of this battle (screens/game.js → audio.voice result*): the
         // compact result carries the leaks and the kill count the slot is picked from
-        emit('result', { fieldId: e.fieldId, battleId: e.battleId, own: !!e.own, result });
-        deliver(e);
+        emit('result', { fieldId: e.fieldId, battleId: e.battleId, own: !!e.own, result: e.result });
       }
+      deliver(e);
     }
     if (e === cur) publishState();
     else flushLeaks();
   }
 
   /**
-   * Send an entry's b.result (retried once on a timeout). `e.delivery`: 'pending' while a request is out, 'delivered'
+   * Send an entry's b.result or b.yield (retried once on a timeout). `e.delivery`: 'pending' while a request is out, 'delivered'
    * once the server answered (ok, or a refusal — final), 'undelivered' when it never got there (LOST_RESULT_CODES): kept
    * for redeliver() (session back online) and for an authoritative b.start of the finished battle.
    */
   function deliver(e) {
-    if (!net || !e.result || e.delivery === 'pending') return;
+    if (!net || (!e.result && e.deliveryType !== 'b.yield') || e.delivery === 'pending') return;
+    if (emergencyFrozen) { e.delivery = 'undelivered'; return; }
     e.delivery = 'pending';
-    const msg = { battleId: e.battleId, result: e.result };
+    const type = e.deliveryType || 'b.result';
+    const msg = type === 'b.yield' ? { battleId: e.battleId } : { battleId: e.battleId, result: e.result };
     const send = (tries) => {
       let req;
-      try { req = net.request('b.result', msg, { timeout: 15000 }); } catch (err) { req = Promise.reject(err); }
+      try { req = net.request(type, msg, { timeout: 15000 }); } catch (err) { req = Promise.reject(err); }
       return Promise.resolve(req).then(() => { e.delivery = 'delivered'; }, (err) => {
         const code = err && err.code;
         if (code === 'TIMEOUT' && tries > 0) return send(tries - 1);
         if (LOST_RESULT_CODES.includes(code)) {
           e.delivery = 'undelivered';
-          console.warn(`[runner] b.result not delivered (${code}) — sent again when the session resumes`);
+          console.warn(`[runner] ${type} not delivered (${code}) — sent again when the session resumes`);
         } else {
           e.delivery = 'delivered';
-          console.warn('[runner] b.result refused', code);
-          recordError('runner', code, 'b.result refused');
+          console.warn(`[runner] ${type} refused`, code);
+          recordError('runner', code, `${type} refused`);
         }
         return null;
       });
@@ -562,6 +576,7 @@ export function createBattleRunner(deps) {
 
   function frame() {
     rafH = null;
+    if (pausedAt != null) return;
     stats.frames++;
     const t = clock();
     for (const e of [...entries.values()]) if (running(e)) advance(e, t, e === cur);
@@ -571,7 +586,7 @@ export function createBattleRunner(deps) {
 
   function pump() {
     // hidden tab: no animation frames — keep authoritative battles on their clock (no rendering)
-    if (!hidden()) return;
+    if (!hidden() || pausedAt != null) return;
     for (const e of [...entries.values()]) if (e.authoritative && running(e)) advance(e, clock(), false);
     flushLeaks();
   }
@@ -710,7 +725,7 @@ export function createBattleRunner(deps) {
       e.meter = sim.spec.attachLpMeter(battle);
       e.t0 = clock() - (e.elapsed / e.speed) * 1000;
       if (lastPool && battle.sharedBoss && typeof battle.sharedBoss.sync === 'function') {
-        battle.sharedBoss.sync(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined);
+        battle.sharedBoss.sync(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined, lastPool.max);
       }
       if (e.endReason) endBattle(e);
       // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field) — for the view
@@ -745,7 +760,7 @@ export function createBattleRunner(deps) {
     // a pending battle not built yet takes lastPool when it is built
     for (const e of [...entries.values(), ...pending.values()]) {
       const pool = e.battle ? e.battle.sharedBoss : null;
-      if (pool && typeof pool.sync === 'function') pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
+      if (pool && typeof pool.sync === 'function') pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined, msg.max);
     }
     emit('pool', msg);
   }
@@ -806,8 +821,11 @@ export function createBattleRunner(deps) {
   if (store && typeof store.subscribe === 'function') {
     offs.push(store.subscribe((s) => {
       const pub = s && s.match && s.match.public ? s.match.public : null;
-      // solo pause (DESIGN §14): the local battle clocks follow m.public.paused
-      setPaused(!!(pub && pub.paused));
+      // Tiny global emergency frames freeze immediately; m.public preserves this across resyncs.
+      const wasEmergency = emergencyFrozen;
+      emergencyFrozen = emergencyActive(s);
+      setPaused(!!(pub && pub.paused) || emergencyFrozen);
+      if (wasEmergency && !emergencyFrozen) redeliver();
       const phase = pub ? pub.phase : null;
       if (phase === lastPhase) return;
       lastPhase = phase;

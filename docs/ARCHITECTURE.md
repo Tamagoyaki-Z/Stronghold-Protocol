@@ -25,7 +25,8 @@ effects), [DATA.md](DATA.md) (generated data), [ASSETS.md](ASSETS.md) (art and a
 
 - **The server** is one Node process: plain `node:http` plus `ws`, no framework (`server/index.js` wires
   `server/http/`). It serves the static client, the generated data and the sim's source files, and runs every room and
-  match in memory — rounds, shop, economy, bots, validation. Nothing is written to disk.
+  match in memory — rounds, shop, economy, bots, validation. This fork additionally reads private announcement files
+  and explicit owner-notification commands from disk ([ANNOUNCEMENTS.md](ANNOUNCEMENTS.md)); game state stays in memory.
 - **The browser** loads native ES modules with no bundler and no build step; the libraries are vendored into
   `public/vendor/` by `tools/vendor.mjs` on `npm install`.
 - **The battle simulation** (`server/sim/`) is pure ESM without any Node API, served read-only at `/sim/`. Both sides
@@ -45,19 +46,21 @@ effects), [DATA.md](DATA.md) (generated data), [ASSETS.md](ASSETS.md) (art and a
 ## 2. The WebSocket protocol
 
 `shared/protocol.js` is normative: `C2S` holds one validator per client message and `S2C` lists the server messages.
-Every frame is JSON text, `{ t, rid?, …fields }`.
+Business objects remain `{ t, rid?, …fields }`. At the WebSocket boundary, each connection negotiates the reversible position-array protocol independently, retaining original JSON for older peers; standard permessage-deflate compresses either format. Ordinary public updates coalesce at 200 ms (5 Hz); explicit forced syncs remain immediate. The normative layout, enums and restoration CLI are in [WIRE_PROTOCOL.md](WIRE_PROTOCOL.md).
 
 | direction | messages | handled in |
 |---|---|---|
 | client → server | `hello` (name, reconnect token) → `welcome`; `ping` → `pong` | `server/net.js` |
+| | `lobby.watch` (summary / paged directory), `lobby.quickMatch` (capacity preference) | `server/lobbyDiscovery.js` |
 | | `room.*`: create, join, ready, difficulty, AI seats, kick, start, the 干员调配 loadout, 干员持有 ownership, 自选编队 picks, spectating | `server/lobby.js` |
 | | `g.*`: match intents — buy, refresh, freeze, level up, sell, move, equip, Arts, rewards, 机变 choices, ready, emotes, watching, pause … | `server/match/match/intents.js` → `server/match/player/` |
 | | `b.progress`, `b.result`: the battle reports of the authoritative browser | `server/match/match/reports.js` |
 | server → client | `room.state`, `room.closed` | `server/lobby.js` |
+| | `lobby.state` (lobby-only counts, at most 50 public room summaries) | `server/lobbyDiscovery.js` |
 | | `m.public` (what every player sees), `m.private` (one player's shop, hand, funds …), `m.field`, `m.toast`, `m.ticker`, `m.emote`, `m.unitStats`, `m.result` | `server/match/match/views.js`, `server/match/player/views.js` |
 | | `b.start` (a BattleSpec), `b.pool` (the shared leader HP), `b.end`; `b.snap` / `b.ev` only in the server-run mode | `server/match/match/clientCombat.js` |
 
-- A request that carries `rid` is answered with `ok` or `error` echoing it. `server/net.js` rate-limits each socket,
+- A request that carries `rid` is answered with `ok`, a requested view (`lobby.state`), or `error` echoing it. `server/net.js` rate-limits each socket,
   validates every message against `C2S` and refuses anything unknown; the handlers never trust the client.
 - Messages meant for people (`m.toast`, `m.ticker`) carry a message id and its parameters, so each client shows them in
   its own language (`shared/i18n.js` `wireMessage`).
@@ -77,9 +80,13 @@ so old imports keep working: `public/js/ui/gameLogic.js` (`public/js/ui/gameLogi
 | path | what |
 |---|---|
 | `server/index.js` | the process entry (`npm start`); `startServer()` wires `server/http/` |
-| `server/http/` | `config.js` (environment), `websocket.js` (sessions, `/ws`), `static.js` (the mounts), `media.js`, `files.js` (MIME, gzip, ETag, ranges), `buildTag.js`, `routes.js` (`/healthz`), `common.js`, `boot.js` (a pending update package first, banner, shutdown) |
+| `server/announcements.js`, `server/announcementNotices.js` | this fork's private Markdown announcement store, read-only HTTP content/images and explicit urgent-notification monitor; `tools/announcements.mjs` is the owner CLI |
+| `server/http/` | `config.js` (environment), `websocket.js` (sessions, `/ws`), `static.js` (mounts), `runtimeCache.js` (content-versioned module/data graph), `media.js`, `files.js` (MIME, Brotli/gzip, ETag, ranges), `buildTag.js`, `routes.js` (`/healthz`), `common.js`, `boot.js` (a pending update package first, banner, shutdown); see [HTTP_CACHE.md](HTTP_CACHE.md) |
+| `server/assetCacheCatalog.js`, `server/http/assetCache.js`, `shared/assetCache.js` | immutable content index, tiny online summary and bounded opt-in filling; the full online catalog is refused. Local ZIP / JSON import, persisted catalog and per-page SW pins are described in [ASSET_CACHE.md](ASSET_CACHE.md) |
 | `server/net.js` | sessions and reconnect tokens, rate limits, message validation |
+| `server/bandwidthEmergency.js`, `server/match/freezeScheduler.js` | Linux egress/demand congestion detection and conditional 120-second retry; reversible HTTP/download admission protection and match-local timer freezing. See [ASSET_CACHE.md](ASSET_CACHE.md#带宽紧急保护) |
 | `server/lobby.js` | rooms, seats, AI seats, spectators; starts a `Match` |
+| `server/lobbyDiscovery.js`, `shared/lobbyDiscovery.js` | lobby subscriptions, changed-only paged room summaries, atomic fastest matching; shared page size and update interval |
 | `server/data.js` | loads `data/*.json` once (frozen) |
 | `server/packs.js` | the content packs (PACKS.md): finds the language packs of `public/i18n/` and the pack folders of `packs/`, validates them, answers `/packs/index.json` and which pack files may be served; re-reads the folders when they change |
 | `server/update.js` | the update package on the player's machine (DEPLOY.md §1.5): before the server starts, an extracted `UPDATE.json` is finished — the install verified against `MANIFEST.json`, the files the new version dropped deleted, or the start refused when the install is another version; doctor's `MANIFEST.json` check |
@@ -102,6 +109,7 @@ so old imports keep working: `public/js/ui/gameLogic.js` (`public/js/ui/gameLogi
 |---|---|
 | `public/index.html`, `public/js/main.js` | the page and its entry: boot, the router (title → lobby → room → game) |
 | `public/js/net.js`, `public/js/store.js`, `public/js/data.js` | the socket client, the observable store, the data loader (`/data/*.json`, with the English overlay) |
+| `public/js/lobbyDiscovery.js`, `public/js/ui/lobbyDiscovery.js` | lobby-only subscription lifecycle, stale-reply protection, online counts, room browser and matching controls |
 | `public/js/battle/` | `runner.js` (the local battle: loads `/sim/`, steps it, reports), `observe.js` (who may watch which field) |
 | `public/js/screens/` | `title.js`, `lobby.js`, `room.js`, `loadout.js` (干员调配), `cultivation.js` (its 潜能 / 练度 controls), `ownership.js` (干员持有), `diy.js` (自选编队), `briefing.js`, `bandDraft.js`, `game.js` with `public/js/screens/game/`, `result.js` |
 | `public/js/ui/` | the HUD components (`hud.js`, `shopBar.js`, `detailPanel.js`, `bondStrip.js`, `teamPanel.js` …); `public/js/ui/gameLogic/` the pure in-match logic, unit-tested in Node |

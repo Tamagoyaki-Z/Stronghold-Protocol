@@ -102,6 +102,10 @@ export function PhaseCapsule({ pub, hud, miss = null }) {
         fallback=${html`<${Icon} name="sword" class="capsule__icon" />`} />
       <span class="capsule__kills num"><b>${hud?.resolved ?? hud?.killed ?? 0}</b>/${hud?.total ?? '--'}</span>
       ${phase === PHASE.UNITE ? html`<span class="capsule__tag">${t('联防')}</span>` : null}
+      ${phase === PHASE.UNITE && Number.isInteger(pub?.unite?.round) && pub.unite.roundsMax > 1
+        ? html`<span class="capsule__wave num" data-testid="unite-wave"
+          title=${t('第 {wave} 轮联防 · 最多 {max} 轮', { wave: pub.unite.round, max: pub.unite.roundsMax })}>
+          ${pub.unite.round}/${pub.unite.roundsMax}</span>` : null}
       ${phase === PHASE.UNITE && Number.isFinite(miss) ? html`<${MissTag} n=${miss} />` : null}
     </div>`;
   }
@@ -250,19 +254,22 @@ export function tempReadyReason(priv) {
 /**
  * Ready toggle (PREP only). Disabled while the temp row holds pieces or a personal choice (教鞭) is open — the reason shows
  * under it (not only on hover): "临时整备区 N 个单位待处理" (user playtest #3 item 3), "请先完成教鞭选择".
- * @param {{ priv:any, onToggle:(ready:boolean)=>void, busy?:boolean, readyCount?:number, total?:number }} props
+ * `pendingMark` (乐观界面反馈): the request is in flight, paint the optimistic marker (aria-busy + a sweep bar) — purely
+ * visual, the button's `is-on` state still follows the server's m.private alone.
+ * @param {{ priv:any, onToggle:(ready:boolean)=>void, busy?:boolean, pendingMark?:boolean, readyCount?:number, total?:number }} props
  */
-export function ReadyToggle({ priv, onToggle, busy, readyCount, total }) {
+export function ReadyToggle({ priv, onToggle, busy, pendingMark = false, readyCount, total }) {
   const ready = !!priv?.ready;
   const temp = tempInfo(priv);
   const choice = !!priv?.personalChoice;
   const reason = !ready ? (choice ? shopBlockReason('ready', { priv, editable: true }) : tempReadyReason(priv) || shopBlockReason('ready', { priv, editable: true })) : null;
   const why = !ready && (choice || temp.count > 0);
   const btn = html`<button type="button" class=${cx('readybtn', 'tapx', ready && 'is-on', busy && 'is-busy')} disabled=${!!reason || busy}
-      aria-pressed=${ready ? 'true' : 'false'} aria-describedby=${why ? 'readywrap-why' : undefined} onClick=${() => onToggle(!ready)}>
+      aria-pressed=${ready ? 'true' : 'false'} aria-busy=${pendingMark ? 'true' : undefined} aria-describedby=${why ? 'readywrap-why' : undefined} onClick=${() => onToggle(!ready)}>
     <span class="readybtn__box">${ready ? html`<${Icon} name="check" />` : null}</span>
     <span class="readybtn__label">${ready ? t('取消准备') : t('准备就绪')}</span>
     <kbd class="readybtn__key">${hotkeyLabelOf('ready')}</kbd>
+    ${pendingMark ? html`<span class="apend" aria-hidden="true"></span>` : null}
   </button>`;
   return html`<div class="readywrap">
     ${reason ? html`<${Tooltip} text=${reason} placement="bottom">${btn}<//>` : btn}
@@ -347,19 +354,20 @@ export function PauseButton({ paused, busy = false, onToggle }) {
 /**
  * Top bar.
  * @param {{ pub:any, priv:any, conn:any, hud:any, total:number|null, drawer:string|null, onExit:Function, onDrawer:(tab:string)=>void,
- *   onReady:(r:boolean)=>void, readyBusy?:boolean, readyCount?:number, playerCount?:number,
+ *   onReady:(r:boolean)=>void, readyBusy?:boolean, readyPending?:boolean, readyCount?:number, playerCount?:number,
  *   pen?:boolean, penAvail?:boolean, onPen?:(on:boolean)=>void, config?: any, frozenAt?: number|null,
  *   pause?: { show: boolean, paused: boolean, busy?: boolean, onToggle: () => void } | null,
  *   live?: { pending: number, unite: boolean, left?: number|null } | null,
- *   spectators?: any[]|null, myId?: any, isHost?: boolean, onRemoveSpectator?: ((playerId: any) => any)|null }} props
+ *   spectator?: boolean, spectators?: any[]|null, myId?: any, isHost?: boolean,
+ *   onRemoveSpectator?: ((playerId: any) => any)|null, onUniteSkipVote?: (scope?: { voteId?: string }) => any }} props
  *   spectators: the room's spectator seats (room.state) — the 观战席 capsule beside the latency (SpectatorPill; the host removes)
  *   frozenAt: the server time every clock shows while the solo match is paused (null = live)
  *   live: the own battle's pending LP loss (liveLp): the tower keeps the settled lp and adds a red −N tick, 联防中 during 联防;
  *     `left` (a leaker in 联防): its enemies still standing — the capsule's ×N tag
  */
-export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, onReady, readyBusy, readyCount, playerCount, pen = false, penAvail = false, onPen = () => {},
+export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, onReady, readyBusy, readyPending = false, readyCount, playerCount, pen = false, penAvail = false, onPen = () => {},
   config = null, frozenAt = null, pause = null, live = null, spectator = false,
-  spectators = null, myId = null, isHost = false, onRemoveSpectator = null }) {
+  spectators = null, myId = null, isHost = false, onRemoveSpectator = null, onUniteSkipVote = () => {} }) {
   const phase = pub?.phase;
   const boss = isBossPhase(phase);
   const lp = boss && Number.isFinite(pub?.teamLp) ? pub.teamLp : Number.isFinite(priv?.lp) ? priv.lp : null;
@@ -386,7 +394,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
       <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开 / 暂离')} class="gtop__exit tapx" />
       <div class="gtop__meta">
         <div class="gtop__net">
-          <${PingPill} ms=${conn?.ping} online=${conn?.status === 'online'} />
+          <${PingPill} ms=${conn?.ping} raw=${conn?.pingRaw} online=${conn?.status === 'online'} />
           <${SpectatorPill} spectators=${spectators} myId=${myId} isHost=${isHost} onRemove=${onRemoveSpectator} />
         </div>
         ${pub?.difficulty ? html`<${DifficultyTag} difficulty=${pub.difficulty} size="sm" />` : null}
@@ -419,9 +427,28 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         ${pause && (pause.show || pause.paused) ? html`<${PauseButton} paused=${!!pause.paused} busy=${pause.busy} onToggle=${pause.onToggle} />` : null}
       </div>
       <${OvertimeWarning} ot=${ot} />
-      ${showReady ? html`<${ReadyToggle} priv=${priv} onToggle=${onReady} busy=${readyBusy} readyCount=${readyCount} total=${playerCount} />` : null}
+      <${UniteSkipVote} pub=${pub} myId=${myId} onVote=${onUniteSkipVote} />
+      ${showReady ? html`<${ReadyToggle} priv=${priv} onToggle=${onReady} busy=${readyBusy} pendingMark=${readyPending} readyCount=${readyCount} total=${playerCount} />` : null}
     </div>
   </header>`;
+}
+
+/** Vote status remains visible to the team; only eligible human seats can cast a vote. */
+export function UniteSkipVote({ pub, myId, onVote }) {
+  const unite = pub?.unite;
+  const vote = unite?.skipVote;
+  if (pub?.phase !== PHASE.UNITE || unite?.round >= unite?.roundsMax || !vote) return null;
+  const eligible = vote.eligible.includes(myId);
+  const voted = vote.voters.includes(myId);
+  return html`<div class="unite-vote" role="status">
+    <${Button} variant="secondary" size="sm" disabled=${!eligible || voted || vote.passed || !vote.open}
+      onClick=${() => onVote?.(vote.id == null ? {} : { voteId: vote.id })} data-testid="unite-skip-vote"
+      title=${t('超过半数在线且未托管的人类玩家同意后，本轮打完就跳过后续全部联防，剩余漏怪照常扣除目标生命值')}>
+      ${vote.passed ? t('已通过：跳过后续全部联防') : voted ? t('已投票跳过后续全部联防') : t('投票跳过后续全部联防')}
+    <//>
+    <span class="unite-vote__count">${vote.passed ? t('本轮结束后直接结算')
+      : vote.eligible.length ? t('{votes}/{eligible} 票 · 需 {needed} 票', { votes: vote.voters.length, eligible: vote.eligible.length, needed: vote.needed }) : t('暂无可投票玩家')}</span>
+  </div>`;
 }
 
 /** DP counter shown at the right edge during combat. */

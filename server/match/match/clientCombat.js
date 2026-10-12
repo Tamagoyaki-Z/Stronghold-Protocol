@@ -131,7 +131,7 @@ export class MatchClientCombat {
     if (f.verifyJob) return;
     const lim = f.spec.timeLimit > 0 ? f.spec.timeLimit : 60;
     const at = f.startAt + Math.round((lim / this.gameSpeed) * 1000) + RESULT_GRACE_MS;
-    f.deadlineTimer = this.later(Math.max(0, at - this.sched.now()), () => {
+    f.deadlineTimer = this.later(Math.max(0, at - this.sched.gameNow()), () => {
       f.deadlineTimer = null;
       if (f.done || f.mode !== 'client') return;
       this._runOnServer(f, 'timeout');
@@ -144,7 +144,7 @@ export class MatchClientCombat {
     if (f.done || f.result == null) return;
     if (this.paused) { f.rearmRelease = true; return; }
     const doneAt = f.startAt + Math.round(((f.endGt || 0) / this.gameSpeed) * 1000);
-    const wait = this.sched.instant ? 0 : Math.max(0, doneAt - this.sched.now());
+    const wait = this.sched.instant ? 0 : Math.max(0, doneAt - this.sched.gameNow());
     f.doneTimer = this.later(wait, () => { f.doneTimer = null; this._fieldDone(f); });
   }
 
@@ -223,6 +223,7 @@ export class MatchClientCombat {
   }
 
   _maybeFieldsDone() {
+    if (this.emergencyFrozen) return;
     if (!this.fields.length || this.fields.some((f) => f.cc && !f.done)) return;
     if (!this.fields.every((f) => f.cc)) return;
     if (this.phase === PHASE.COMBAT) this._finishCombat((f) => f.result);

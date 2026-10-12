@@ -1,19 +1,26 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const enabled = process.env.SP_E2E === '1' && existsSync(CHROME);
 describe('community UI: lobby header and shared DIY details', { skip: !enabled }, () => {
-  let srv, browser;
+  let srv, browser, announcementRevision;
   before(async () => {
     const { startServer } = await import('../../server/index.js');
     srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
+    announcementRevision = (await (await fetch(`http://127.0.0.1:${srv.port}/api/announcements`)).json()).revision;
     const P = (await import('puppeteer-core')).default;
     browser = await P.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
     mkdirSync(new URL('../e2e/out/', import.meta.url), { recursive: true });
   });
-  after(async () => { await browser?.close(); await srv?.close(); });
+  after(async () => {
+    try { await browser?.close(); } finally { await srv?.close(); }
+    assert.equal(browser?.connected || false, false, 'test browser disconnected after cleanup');
+    assert.equal(srv?.server.listening || false, false, 'test server released its listening port');
+  });
+  const screenshotPath = name => fileURLToPath(new URL(`../e2e/out/${name}`, import.meta.url));
   test('equipment draft clears an armed choice when shared stock becomes unavailable', async () => {
     const { context, page } = await open(1600);
     try {
@@ -37,7 +44,7 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       await page.waitForFunction(() => document.querySelector('.spcard').disabled && !document.querySelector('.spcard.is-armed'));
       assert.match(await page.$eval('.spcard', e => e.textContent), /库存不足/);
       assert.equal(await page.evaluate(() => window.__picks?.length || 0), 0);
-      await page.screenshot({ path: new URL('../e2e/out/shared-stock-unavailable.png', import.meta.url).pathname });
+      await page.screenshot({ path: screenshotPath('shared-stock-unavailable.png') });
       await page.click('.spcard:nth-child(2)'); await page.click('.spcard:nth-child(2)');
       assert.deepEqual(await page.evaluate(() => window.__picks), [1]);
     } finally { await context.close(); }
@@ -45,16 +52,18 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
   async function open(width, lang = 'zh-CN') {
     const context = await browser.createBrowserContext(), page = await context.newPage();
     await page.setViewport({ width, height: width < 1000 ? 390 : 900, hasTouch: width < 1000 });
-    await page.evaluateOnNewDocument(l => {
+    await page.evaluateOnNewDocument((l, revision) => {
       localStorage.setItem('sp.name', '超长名称的测试博士名称'); sessionStorage.setItem('sp.entered', '1');
       localStorage.setItem('sp.pref.settings', JSON.stringify({ textSize: 'xl' }));
       localStorage.setItem('sp.pref.lang', JSON.stringify(l));
-    }, lang);
+      // Treat the current server announcement as already dismissed, so it cannot obscure this unrelated UI check.
+      if (revision) localStorage.setItem('sp.pref.announcements', JSON.stringify({ v: 1, suppressedRevision: revision }));
+    }, lang, announcementRevision);
     await page.goto(`http://127.0.0.1:${srv.port}/`, { waitUntil: 'networkidle0' });
     await page.waitForSelector('.lobby-screen');
     return { context, page };
   }
-  for (const width of [1600, 844]) for (const lang of ['zh-CN', 'en', 'ja', 'ko', 'zh-TW']) {
+  for (const width of [1600, 960, 844]) for (const lang of ['zh-CN', 'en', 'ja', 'ko', 'zh-TW']) {
     test(`lobby ${width}px ${lang}, XL text, long name, resume and install controls`, async () => {
       const { context, page } = await open(width, lang);
       try {
@@ -70,21 +79,48 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
         });
         await page.waitForSelector('[data-testid="resume-local-match"]');
         await page.waitForSelector('[data-testid="pwa-install"]');
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.screenshot({ path: screenshotPath(`lobby-header-${width}-${lang}.png`) });
+        const heading = await page.$eval('.lobby-screen .topbar__title', e => {
+          const r = e.getBoundingClientRect();
+          return { left: r.left, right: r.right, center: (r.left + r.right) / 2, viewport: innerWidth };
+        });
+        assert.ok(Math.abs(heading.center - heading.viewport / 2) <= 1,
+          `lobby ${width}px ${lang} title must stay within 1px of the viewport center: ${JSON.stringify(heading)}`);
         const boxes = await page.$$eval('.lobby-screen .topbar button, .lobby-screen .topbar__center', els => els.map(e => {
-          const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-          return { label: e.getAttribute('aria-label') || e.textContent.trim(), x: r.x, y: r.y, right: r.right, bottom: r.bottom,
-            hit: e.tagName !== 'BUTTON' || hit === e || e.contains(hit) };
-        }));
+          const r = e.getBoundingClientRect(), group = e.closest('.topbar__left, .topbar__right'), clip = group?.getBoundingClientRect() || r;
+          return { label: e.getAttribute('aria-label') || e.textContent.trim(), x: Math.max(r.x, clip.x), y: r.y,
+            right: Math.min(r.right, clip.right), bottom: r.bottom, centerY: r.y + r.height / 2, group: group?.className };
+        }).filter(b => b.right > b.x));
         for (const b of boxes) {
           assert.ok(b.x >= 0 && b.right <= width && b.y >= 0, JSON.stringify(b));
-          assert.equal(b.hit, true, JSON.stringify(b));
         }
         for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
           const a = boxes[i], b = boxes[j];
           assert.ok(Math.min(a.right, b.right) - Math.max(a.x, b.x) <= 1 || Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y) <= 1,
             `${a.label} overlaps ${b.label}`);
+          if (a.group && a.group === b.group) assert.ok(Math.abs(a.centerY - b.centerY) <= 1,
+            `${a.label} and ${b.label} must stay on the same toolbar row`);
         }
-        await page.screenshot({ path: new URL(`../e2e/out/lobby-header-${width}-${lang}.png`, import.meta.url).pathname });
+        // Translated controls may exceed a fixed, centered header's side columns. Every control must remain reachable
+        // through their approved horizontal scrolling, and its center must hit the actual button once it is visible.
+        for (const button of await page.$$('.lobby-screen .topbar button')) {
+          await button.evaluate(e => e.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+          const b = await button.evaluate(e => {
+            const r = e.getBoundingClientRect(), clip = e.closest('.topbar__left, .topbar__right').getBoundingClientRect();
+            const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            const title = document.querySelector('.lobby-screen .topbar__title').getBoundingClientRect();
+            return { label: e.getAttribute('aria-label') || e.textContent.trim(), x: r.x, y: r.y, right: r.right, bottom: r.bottom,
+              clipLeft: clip.left, clipRight: clip.right, at: hit?.outerHTML.slice(0, 300), hit: hit === e || e.contains(hit),
+              titleCenter: (title.left + title.right) / 2, viewport: innerWidth };
+          });
+          assert.ok(b.x >= Math.max(0, b.clipLeft) - 1 && b.right <= Math.min(width, b.clipRight) + 1 && b.y >= 0, JSON.stringify(b));
+          assert.equal(b.hit, true, JSON.stringify(b));
+          assert.ok(Math.abs(b.titleCenter - b.viewport / 2) <= 1, JSON.stringify(b));
+        }
+        await page.$$eval('.lobby-screen .topbar__left, .lobby-screen .topbar__right', els => els.forEach(e => { e.scrollLeft = 0; }));
+        await page.screenshot({ path: screenshotPath(`lobby-header-${width}-${lang}.png`) });
         await page.click('.stats-entry'); await page.waitForSelector('.st .st-tab');
         await page.click('.st-back');
         await page.waitForSelector('.st', { hidden: true });
@@ -100,6 +136,7 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       const picker = '[data-testid="diy-picker"]';
       await page.waitForSelector(`${picker} [data-char="char_112_siege"]`);
       await page.click(`${picker} [data-char="char_112_siege"]`);
+      await page.screenshot({ path: screenshotPath(`diy-initial-${width}-xl.png`) });
       await page.waitForSelector(`${picker} .lo-sec--stats[data-variant="elite"]`);
       const detail = () => page.$eval(`${picker} .diy-pick__detail`, e => ({ stats: [...e.querySelectorAll('.dstat__v')].map(n => n.textContent),
         skill: [...e.querySelectorAll('.diy-choice__desc')].map(n => n.textContent), talents: e.querySelectorAll('.lo-minfo__row').length,
@@ -112,7 +149,7 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       const restored = await detail(); assert.deepEqual(restored.stats, elite.stats);
       // Independent scrolling must reach all skills/modules without displacing the fixed confirm control.
       await page.$eval(`${picker} .diy-pick__detail`, e => { e.scrollTop = e.scrollHeight; });
-      await page.screenshot({ path: new URL(`../e2e/out/diy-detail-${width}-xl.png`, import.meta.url).pathname });
+      await page.screenshot({ path: screenshotPath(`diy-detail-${width}-xl.png`) });
       const accessible = await page.$eval('[data-testid="diy-confirm"]', e => {
         const r = e.getBoundingClientRect(), at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
         return r.bottom <= innerHeight && (at === e || e.contains(at));

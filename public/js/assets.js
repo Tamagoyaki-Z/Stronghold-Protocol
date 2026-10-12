@@ -42,6 +42,8 @@
 // so it can be unit tested without a browser. Helpers never throw on unknown ids — they return null and the
 // caller falls back (docs/ASSETS.md "Other fallbacks").
 
+import { runtimeURL, runtimeCacheMode } from './runtime.js';
+
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const str = (v) => (typeof v === 'string' && v ? v : null);
 const get = (o, k) => (isObj(o) && Object.hasOwn(o, k) ? o[k] : undefined);
@@ -69,7 +71,14 @@ export function avatarUrl(m, id, opts) {
     rec = get(get(m, 'chars'), base);
     if (rec && /_2$/.test(s)) e2 = true;
   }
-  if (rec) return str(e2 && rec.avatarE2) || str(rec.avatar) || null;
+  if (rec) {
+    // a chosen skin (docs/SKINS.md) replaces the operator's own avatar; an unknown skinId falls through
+    if (opts && str(opts.skin)) {
+      const skin = get(get(rec, 'skins'), opts.skin);
+      if (skin && str(skin.avatar)) return str(skin.avatar);
+    }
+    return str(e2 && rec.avatarE2) || str(rec.avatar) || null;
+  }
   return null;
 }
 
@@ -152,9 +161,16 @@ export function spineEntry(m, id, opts) {
   const s = str(id);
   if (!s) return null;
   const ch = get(get(m, 'chars'), s) || get(get(m, 'chars'), baseCharId(s));
-  if (ch && isObj(ch.spine)) {
-    const sp = (opts && opts.back && isObj(ch.spine.back)) ? ch.spine.back : ch.spine.front;
-    return validSpine(sp) ? sp : null;
+  if (ch) {
+    const defaultSp = (opts && opts.back && isObj(ch.spine?.back)) ? ch.spine.back : ch.spine?.front;
+    const fallbackSp = validSpine(defaultSp) ? defaultSp : null;
+    // a chosen skin (docs/SKINS.md) replaces the operator's own model; a model that fails to load falls back to it
+    const skin = opts && str(opts.skin) ? get(get(ch, 'skins'), opts.skin) : null;
+    if (skin && isObj(skin.spine)) {
+      const sp = (opts && opts.back && isObj(skin.spine.back)) ? skin.spine.back : skin.spine.front;
+      if (validSpine(sp)) return fallbackSp ? { ...sp, fallback: fallbackSp } : sp;
+    }
+    return fallbackSp;
   }
   const tk = get(get(m, 'tokens'), s);
   if (tk) {
@@ -200,9 +216,12 @@ export function localSpineEntry(sl, local, web) {
 }
 
 /** Whether an operator/token/enemy has a Back model. */
-export function hasBackSpine(m, id) {
+export function hasBackSpine(m, id, skinId) {
   const ch = get(get(m, 'chars'), str(id) || '') || get(get(m, 'chars'), baseCharId(id) || '');
-  return !!(ch && isObj(ch.spine) && validSpine(ch.spine.back));
+  if (!ch) return false;
+  const skin = str(skinId) ? get(get(ch, 'skins'), skinId) : null;
+  if (skin && isObj(skin.spine) && validSpine(skin.spine.back)) return true;
+  return isObj(ch.spine) && validSpine(ch.spine.back);
 }
 
 export function validSpine(sp) {
@@ -559,6 +578,18 @@ export function loadImageElement(url) {
   });
 }
 
+/**
+ * 对局进行中按需下载的并发上限（**只在对局中生效**；平时不限，和以前完全一致）。
+ * 一个对局页面会同时要几十张头像 / 立绘 / 骨架页，玩家多半是家用宽带：几十条并行请求会把同一条路上的
+ * WebSocket 饿死（服务端看到 Send-Q 积压，玩家看到 9999ms 与「点了没反应」）。这里只限并发数，
+ * 不改请求顺序、不改缓存语义；IMPORTANT: 收紧后画面里的素材仍照常加载，只是排队更慢。
+ */
+export const IMAGE_CONCURRENCY_MATCH = 2;
+/** 骨架加载器（assets.js RefLru，默认并发 6）在对局中的上限：同样给 WebSocket 让路。 */
+export const SPINE_CONCURRENCY_MATCH = 2;
+/** 槽位保险丝：一个请求卡住时只释放槽位（原 promise 继续等），队列不会被堵死。 */
+export const IMAGE_SLOT_TIMEOUT_MS = 30000;
+
 /** Default Spine loader: PIXI.Assets.load(skel) → spineData (needs globalThis.PIXI + PIXI.spine). */
 export async function loadSpineData(entry, opts) {
   const PIXI = globalThis.PIXI;
@@ -748,6 +779,37 @@ export function createAssets(options) {
     for (const fn of [...listeners]) { try { fn(what); } catch (err) { console.warn('[assets] change listener failed', err); } }
   };
 
+  // ---- 按需下载闸门 (matches only) -----------------------------------------------------------------------------
+  // 平时 slotLimit = Infinity：每一次 image() 立刻发出请求，和以前一模一样（这里不是节流、不是延迟，只是并发上限）。
+  // 对局中（setDownloadMode(true)，由 ui/assetCache.js 跟着路由设置）降到 IMAGE_CONCURRENCY_MATCH，让同一条
+  // 家宽上的 WebSocket 有喘息空间。槽位超时只释放槽位、不动原 promise：一个卡住的下载不会堵住整条队列。
+  let slotLimit = Infinity;
+  let slotsActive = 0;
+  const slotQueue = [];
+  function pumpSlots() {
+    while (slotQueue.length && slotsActive < slotLimit) slotQueue.shift()();
+  }
+  function withSlot(fn) {
+    if (slotLimit === Infinity) return Promise.resolve().then(fn);
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        slotsActive++;
+        let timer = null;
+        let freed = false;
+        const free = () => {
+          if (freed) return;
+          freed = true;
+          if (timer != null) { timers.clear(timer); timer = null; }
+          slotsActive = Math.max(0, slotsActive - 1);
+          pumpSlots();
+        };
+        timer = timers.set(free, opts.slotTimeoutMs ?? IMAGE_SLOT_TIMEOUT_MS);
+        Promise.resolve().then(fn).then((v) => { free(); resolve(v); }, (e) => { free(); reject(e); });
+      };
+      if (slotsActive < slotLimit) run(); else slotQueue.push(run);
+    });
+  }
+
   /** Adopt a manifest (fetched or seeded): resolves `ready()`, stops the background tries, tells the listeners. */
   function adopt(m) {
     if (manifest || !isObj(m)) return false;
@@ -761,7 +823,8 @@ export function createAssets(options) {
 
   /** One fetch of the manifest → the JSON object, or throws (err.status / err.badJson as data.js). */
   async function fetchOnce() {
-    const res = await doFetch(url, { cache: 'no-cache' });
+    const versioned = runtimeURL(url);
+    const res = await doFetch(versioned, { cache: runtimeCacheMode(versioned) });
     if (!res || !res.ok) throw Object.assign(new Error(`HTTP ${res ? res.status : '???'}`), { status: res ? res.status : null });
     let json;
     try { json = await res.json(); } catch (err) { throw Object.assign(err instanceof Error ? err : new Error(String(err)), { badJson: true }); }
@@ -847,7 +910,7 @@ export function createAssets(options) {
     if (retry && e?.done && !e.value) { images.delete(s); e = null; }
     if (!e) {
       e = { value: null, done: false, promise: null };
-      e.promise = Promise.resolve().then(() => loadImage(s)).then(
+      e.promise = Promise.resolve().then(() => withSlot(() => loadImage(s))).then(
         (img) => { e.value = img; e.done = true; return img; },
         () => { e.done = true; return null; },
       );
@@ -861,7 +924,8 @@ export function createAssets(options) {
     if (!localPromise) {
       localPromise = (async () => {
         try {
-          const res = await doFetch(localUrl, { cache: 'no-cache' });
+          const versioned = runtimeURL(localUrl);
+          const res = await doFetch(versioned, { cache: runtimeCacheMode(versioned) });
           if (!res || !res.ok) return localManifest;
           const json = await res.json();
           if (!localManifest && isObj(json) && isObj(json.groups)) { localManifest = json; notify('local'); }
@@ -919,6 +983,23 @@ export function createAssets(options) {
     },
     /** Cached image element promise (null on failure). */
     image,
+    /**
+     * 对局期间收紧按需下载的并发（头像 / 立绘 / 骨架），返回是否发生了变化。
+     * 平时传 false 就是完全恢复到默认：image() 不限并发、骨架并发回到 opts.spineConcurrency（默认 6）。
+     * 由 ui/assetCache.js 跟着路由调用（它已经在做「对局期间暂停批量缓存」）。
+     * @param {boolean} inMatch
+     */
+    setDownloadMode(inMatch) {
+      const want = inMatch === true;
+      const next = want ? (opts.imageConcurrencyPlaying ?? IMAGE_CONCURRENCY_MATCH) : Infinity;
+      const changed = next !== slotLimit;
+      slotLimit = next > 0 ? next : 1;
+      spine.concurrency = want ? (opts.spineConcurrencyPlaying ?? SPINE_CONCURRENCY_MATCH) : (opts.spineConcurrency ?? 6);
+      pumpSlots();
+      return changed;
+    },
+    /** 诊断用：对局中收紧到多少（Infinity = 不限）。 */
+    get downloadLimit() { return slotLimit; },
     /** Already-loaded image element or null (sync). */
     imageNow(u) { const e = images.get(str(u) || ''); return e && e.done ? e.value : null; },
     /**

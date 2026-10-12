@@ -40,10 +40,10 @@ export class MatchViews {
       case PHASE.INFO_CHECK: return ps.infoReady ? 'ready' : 'deciding';
       case PHASE.BAND_DRAFT:
         if (this.draft && this.draft.picks[ps.playerId]) return 'ready';
-        return this.draft && this.draftTurn() === ps.playerId ? 'deciding' : 'acting';
+        return this.draft && this.draftTurn(ps.playerId) === ps.playerId ? 'deciding' : 'acting';
       case PHASE.SP_DRAFT:
         if (this.sp && this.sp.picks[ps.playerId] != null) return 'ready';
-        return this.sp && this.spTurn() === ps.playerId ? 'deciding' : 'acting';
+        return this.sp && this.spTurn(ps.playerId) === ps.playerId ? 'deciding' : 'acting';
       case PHASE.PREP: return ps.ready ? 'ready' : 'acting';
       case PHASE.COMBAT: case PHASE.FINAL_ASSAULT: case PHASE.HIDDEN_CORE: {
         const f = this.fields.find((x) => x.players.includes(ps.playerId));
@@ -88,6 +88,8 @@ export class MatchViews {
       hiddenRound: this.gd.hiddenRound,
       bossPairs: this.bossWaves ? this.bossWaves.map(w => w.players.slice()) : this.bossPairs ? this.bossPairs.map(ids => ids.slice()) : null,
       spRound: this.gd.spRounds().includes(this.round),
+      playerCount: this.order.length,
+      poolGroups: this.poolGroups.map(({ id, playerIds, scale }) => ({ id, playerIds: playerIds.slice(), scale })),
       // DESIGN §14: 'client' = battles are simulated by the browsers (b.start specs), 'server' = legacy streaming
       combatMode: this.clientCombat ? 'client' : 'server',
       // solo pause (g.pause, DESIGN §14): the battle, its field clock and every deadline are frozen while true
@@ -114,6 +116,7 @@ export class MatchViews {
         fieldId: this.fieldOf(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
+        ...(Object.keys(ps.skins).length ? { skins: ps.skins } : {}),
         // the LP this round's own battle will cost at settlement so far (COMBAT / 联防 only, omitted when 0)
         ...this._pendingLpView(ps),
       })),
@@ -124,6 +127,13 @@ export class MatchViews {
         return v;
       }),
     };
+    // Full public snapshots replace the previous state. Omit inactive protection fields from the normal hot path;
+    // their absence in the recovery snapshot also clears the client's frozen state.
+    if (this.emergencyFrozen) {
+      v.emergencyFrozen = true;
+      v.emergencyFrozenAt = this.emergencyFrozenAt;
+      v.emergencyReason = this.emergencyReason;
+    }
     if (this.teamLp != null) v.teamLp = Math.max(0, Math.round(this.teamLp));
     // 最终攻势 / 隐秘核心: when the overtime drain starts (ms epoch; `deadline` is the level's 120 s countdown)
     if ((this.phase === PHASE.FINAL_ASSAULT || this.phase === PHASE.HIDDEN_CORE) && this.overtimeAt) v.overtimeAt = this.overtimeAt;
@@ -132,6 +142,12 @@ export class MatchViews {
       const d = this.draft;
       // turnSeconds: the length of a turn (the countdown gauge's total; 0 when untimed) — deadline = turnDeadline
       v.draft = {
+        id: d.id,
+        groups: d.groups.map((g) => ({
+          id: g.id, playerIds: g.playerIds.slice(), order: g.order.slice(),
+          turn: g.done ? null : g.order[g.idx] ?? null, picks: { ...g.picks }, skipsLeft: { ...g.skipsLeft },
+          turnDeadline: g.turnDeadline || 0, turnSeconds: g.turnSeconds || 0, untimed: !!g.untimed, done: !!g.done,
+        })),
         order: d.order.slice(), turn: this.draftTurn(), picks: { ...d.picks }, skipsLeft: { ...d.skipsLeft }, turnDeadline: d.turnDeadline || 0,
         turnSeconds: d.untimed ? 0 : this.bandTurnMs() / 1000, untimed: !!d.untimed,
       };
@@ -139,12 +155,25 @@ export class MatchViews {
     if (this.phase === PHASE.SP_DRAFT && this.sp) {
       const s = this.sp;
       v.sp = {
+        id: s.id,
+        groups: s.groups.map((g) => ({
+          id: g.id, playerIds: g.playerIds.slice(), order: g.order.slice(),
+          family: g.family, name: g.name, desc: g.desc, eventId: g.eventId,
+          cards: g.cards.map((c) => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPoolFor(g.playerIds[0]).canGain(c.id) })),
+          turn: g.done ? null : g.order[g.idx] ?? null,
+          picks: { ...g.picks }, taken: { ...g.taken }, turnDeadline: g.turnDeadline || 0,
+          turnSeconds: g.turnSeconds || 0, untimed: !!g.untimed, done: !!g.done,
+        })),
         family: s.family, name: s.name, desc: s.desc, eventId: s.eventId,
         cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPool.canGain(c.id) })), order: s.order.slice(),
         turn: this.spTurn(), picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed,
+        turnDeadline: s.turnDeadline || 0, turnSeconds: s.turnSeconds || 0,
       };
     }
-    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId) };
+    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = {
+      helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId),
+      round: this.unitePlan.round, roundsMax: this.unitePlan.roundsMax, skipVote: this.uniteSkipVoteView(),
+    };
     // SETTLE after a 联防: its outcome as data (settle.js uniteResultView; GitHub #235, PR #112) — { through, helpers,
     // leakers, losses: { playerId: the LP settlement charged this round } } — the client's result box reads the viewer's
     // own charge from it; absent when no 联防 resolved (the client then shows the round's own battle result)
@@ -284,6 +313,7 @@ export class MatchViews {
         area: 'board',
         name: rec ? rec.name : piece.id, tier: rec && Number.isInteger(rec.tier) ? rec.tier : 1, golden: !!(rec && rec.isGolden),
         spine: assets.spine || (rec && rec.charId) || piece.id, avatar: assets.avatar || (rec && rec.charId) || piece.id,
+        skin: piece.kind === 'chess' ? (ps.skins?.[chess?.baseId || piece.id] || ps.skins?.[piece.id]) : undefined,
         x: c, y: r, dir: pieceDir(piece), facing: pieceDir(piece) === 'LEFT' ? -1 : 1, maxHp: rec && rec.stats && Number.isFinite(rec.stats.maxHp) ? rec.stats.maxHp : 1,
         skillIndex: lo && Number.isInteger(lo.skillIndex) ? lo.skillIndex : undefined,
         moduleId: lo && typeof lo.moduleId === 'string' ? lo.moduleId : undefined,

@@ -1,19 +1,36 @@
 // Real browser / server checks for local identity recovery, per-operator voice, install offers and large text.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const CACHE = path.resolve(ROOT, '.cache');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const ENABLED = process.env.SP_E2E === '1' && existsSync(CHROME);
 describe('0.2.3 follow-up client features', { skip: !ENABLED }, () => {
-  let server, browser, base;
+  let server, browser, base, announcementsDir;
   before(async () => {
     const { startServer } = await import('../../server/index.js');
     const puppeteer = (await import('puppeteer-core')).default;
-    server = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
+    // Keep operator-managed runtime announcements out of these unrelated UI flows.
+    // Recovery/automatic-announcement races are covered by announcements-ui.test.js.
+    mkdirSync(CACHE, { recursive: true });
+    announcementsDir = mkdtempSync(path.resolve(CACHE, 'upstream-v023-followup-empty-announcements-'));
+    server = await startServer({ port: 0, host: '127.0.0.1', quiet: true, announcementsDir });
     base = `http://127.0.0.1:${server.port}`;
     browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
   });
-  after(async () => { await browser?.close(); await server?.close(); });
+  after(async () => {
+    try { await browser?.close(); } finally {
+      try { await server?.close(); } finally {
+        if (announcementsDir) {
+          assert.equal(path.dirname(announcementsDir), CACHE);
+          rmSync(announcementsDir, { recursive: true, force: true });
+        }
+      }
+    }
+  });
   async function pageIn(ctx, phone = false, random = null) {
     const page = await ctx.newPage();
     await page.setViewport({ width: phone ? 844 : 1440, height: phone ? 390 : 900 });
@@ -40,13 +57,15 @@ describe('0.2.3 follow-up client features', { skip: !ENABLED }, () => {
       assert.equal(await b.evaluate(() => globalThis.__SP__.store.get().connection.status), 'online');
       await b.close();
       await a.click('[data-testid="resume-local-match"]');
-      await a.waitForSelector('.modal .btn--block');
+      await a.waitForSelector('.resume-match .btn--block');
+      assert.equal(await a.evaluate(() => globalThis.__SP__.store.get().ui.resumePromptOpen), true);
       await a.evaluate(() => { globalThis.recoveryDocument = true; });
-      await a.click('.modal .btn--block');
+      await a.click('.resume-match .btn--block');
       await a.waitForFunction(() => globalThis.__SP__?.store.get().match.public?.phase === 'INFO_CHECK');
       const after = await a.evaluate(() => { const s = globalThis.__SP__.store.get(); return { id: s.me.playerId, code: s.room.code }; });
       assert.deepEqual(after, before);
       assert.equal(await a.evaluate(() => globalThis.recoveryDocument), true, 'welcome arrives in the same document');
+      await a.waitForFunction(() => globalThis.__SP__.store.get().ui.resumePromptOpen === false);
     } finally { await ctx.close(); }
   });
   test('a refreshing match window keeps its seat while its init is waiting and another window clicks recovery', async () => {
@@ -87,8 +106,8 @@ describe('0.2.3 follow-up client features', { skip: !ENABLED }, () => {
       await owner.waitForFunction(() => typeof globalThis.finishIdentityInit === 'function');
       await guest.bringToFront();
       await guest.click('[data-testid="resume-local-match"]');
-      await guest.waitForSelector('.modal .btn--block');
-      await guest.click('.modal .btn--block');
+      await guest.waitForSelector('.resume-match .btn--block');
+      await guest.click('.resume-match .btn--block');
       await guest.waitForFunction(() => document.body.textContent.includes('此对局仍在其他窗口中'));
       assert.equal(await owner.evaluate(() => sessionStorage.getItem('sp.token')), before.token);
       await owner.evaluate(() => globalThis.finishIdentityInit());
@@ -207,11 +226,39 @@ describe('0.2.3 follow-up client features', { skip: !ENABLED }, () => {
     const ctx = await browser.createBrowserContext();
     try {
       const page = await pageIn(ctx, true);
+      await page.setViewport({ width: 844, height: 390, hasTouch: true });
+      await page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online' && document.querySelector('.lobby-screen'));
       for (const lang of ['zh-CN', 'en', 'ja', 'ko', 'zh-TW']) {
         await page.evaluate(async (lang) => {
           await (await import('/js/ui/lang.js')).switchLang(lang);
           (await import('/js/ui/settings.js')).updateSettings({ textSize: 'xl' });
         }, lang);
+        const toolbar = await page.$eval('.lobby-screen .topbar', (e) => {
+          const heading = e.querySelector('.topbar__center').getBoundingClientRect();
+          const rowCenters = [...e.querySelector('.topbar__right').children].filter((x) => x.matches('button,.me-chip')).map((x) => {
+            const r = x.getBoundingClientRect(); return r.top + r.height / 2;
+          });
+          return { coarse: document.documentElement.classList.contains('sp-coarse'), headingCenter: heading.left + heading.width / 2,
+            headingBottom: heading.bottom, rowCenters };
+        });
+        assert.equal(toolbar.coarse, true, 'phone fixture has real touch hit areas');
+        assert.ok(Math.abs(toolbar.headingCenter - 422) < 1, `${lang}: heading stays centered`);
+        assert.ok(Math.max(...toolbar.rowCenters) - Math.min(...toolbar.rowCenters) < 2, `${lang}: tools and player card share one row`);
+        // Narrow screens retain one tool row: scroll each control into view before checking access.
+        for (const button of await page.$$('.lobby-screen .topbar button')) {
+          await button.evaluate((e) => e.scrollIntoView({ block: 'nearest', inline: 'center' }));
+          const control = await button.evaluate((e) => {
+            const r = e.getBoundingClientRect();
+            return { text: e.textContent.trim(), height: r.height, width: r.width, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+              hit: e.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) };
+          });
+          assert.ok(control.height >= 44, `${lang}: ${control.text} contains its 44px touch target`);
+          assert.ok(control.width >= 44, `${lang}: ${control.text} contains its 44px touch width`);
+          assert.ok(control.top >= toolbar.headingBottom && control.left >= 0 && control.right <= 844 && control.bottom <= 390,
+            `${lang}: ${control.text} fits below the heading and inside the phone`);
+          assert.equal(control.hit, true, `${lang}: ${control.text} center hits its own control`);
+        }
+        await page.$eval('[data-testid="settings-btn"]', (e) => e.scrollIntoView({ block: 'nearest', inline: 'center' }));
         await page.click('[data-testid="settings-btn"]');
         await page.waitForSelector('.modal .set-list');
         const overflow = await page.$eval('.modal__body', (e) => e.scrollWidth - e.clientWidth);

@@ -30,6 +30,7 @@
 import { useEffect, useReducer } from '../vendor/hooks.module.js';
 import { applyFileOverlay } from '../../shared/i18nData.js';
 import { canonicalLang } from '../../shared/i18nPacks.js';
+import { runtimeURL, runtimeCacheMode } from './runtime.js';
 
 /** Known data files (name → URL basename). Unknown names are allowed too (`/data/<name>.json`). */
 export const DATA_FILES = Object.freeze({
@@ -44,6 +45,9 @@ export const DATA_FILES = Object.freeze({
   choices: 'choices.json',
   config: 'config.json',
   assets: 'assets.json',
+  // 干员皮肤 catalogue (docs/SKINS.md): ids/names/series of every skin the project knows. It carries no URLs —
+  // which skins are INSTALLED is data/assets.json (chars[charId].skins), ui/skins.js keeps the two apart.
+  skins: 'skins.json',
   // 补位 stand-ins (DATA.md §18): the bodies the 干员持有 screen, the cards and the detail card compose (shared/standIn.js)
   backups: 'backups.json',
   // Optional art extracted from a local game client (DESIGN §13): { groups: { '<subdir>': { name: { path, w, h } } } }.
@@ -162,7 +166,8 @@ export function createDataStore(opts = {}) {
    */
   function readJson(name) {
     const run = async () => {
-      const res = await doFetch(urlFor(name), { cache: 'no-cache' });
+      const url = runtimeURL(urlFor(name));
+      const res = await doFetch(url, { cache: runtimeCacheMode(url) });
       if (!res || !res.ok) throw Object.assign(new Error(`HTTP ${res ? res.status : '???'}`), { status: res ? res.status : null });
       try {
         return await res.json();
@@ -287,7 +292,8 @@ export function createDataStore(opts = {}) {
     const p = (async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          const res = await doFetch(url, { cache: 'no-cache' });
+          const versioned = runtimeURL(url);
+          const res = await doFetch(versioned, { cache: runtimeCacheMode(versioned) });
           if (!res || !res.ok) throw Object.assign(new Error(`HTTP ${res ? res.status : '???'}`), { status: res ? res.status : null });
           const json = await res.json();
           if (!json || typeof json !== 'object' || !json.files) throw Object.assign(new Error('not an overlay'), { badJson: true });

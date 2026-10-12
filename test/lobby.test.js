@@ -19,7 +19,7 @@ import { sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp,
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
 import { TestClient } from './helpers/wsClient.js';
-import { ERR, MAX_SEATS, MAX_SPECTATORS, PHASE, EMOTES } from '../shared/constants.js';
+import { ERR, BASE_SEATS, MAX_SEATS, MAX_SPECTATORS, PHASE, EMOTES } from '../shared/constants.js';
 
 const CODE_RE = new RegExp(`^[${CODE_ALPHABET}]{4}$`);
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -68,7 +68,7 @@ function clientPool(getUrl) {
 }
 
 async function createRoom(c, mode = 'coop', difficulty = 'NORMAL') {
-  const r = await c.request({ t: 'room.create', mode, difficulty });
+  const r = await c.request({ t: 'room.create', mode, difficulty, capacity: BASE_SEATS });
   assert.equal(r.t, 'ok', JSON.stringify(r));
   return c.waitFor('room.state', (s) => s.hostId === c.id && s.mode === mode);
 }
@@ -162,7 +162,7 @@ describe('static http server', () => {
   });
 
   test('javascript: correct MIME, gzip when accepted, identity otherwise', async () => {
-    const gz = await httpReq(srv.port, '/js/app.js', { headers: { 'accept-encoding': 'gzip, deflate, br' } });
+    const gz = await httpReq(srv.port, '/js/app.js', { headers: { 'accept-encoding': 'gzip, deflate' } });
     assert.equal(gz.status, 200);
     assert.equal(gz.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(gz.headers['content-encoding'], 'gzip');
@@ -236,7 +236,7 @@ describe('static http server', () => {
     const assetRoot = await httpReq(srv.port, '/assets');
     assert.equal(assetRoot.status, 301, 'directory redirect, not cached content');
     const versioned = await httpReq(srv.port, '/js/app.js?v=123');
-    assert.match(versioned.headers['cache-control'], /immutable/);
+    assert.equal(versioned.headers['cache-control'], 'no-cache', 'an arbitrary query is not a verified runtime content version');
     const html = await httpReq(srv.port, '/index.html?v=1');
     assert.equal(html.headers['cache-control'], 'no-cache');
   });
@@ -485,7 +485,7 @@ describe('websocket lobby', () => {
     await expectError(c, { t: 'room.join', code: 'AB CD' }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.join', code: { $gt: '' } }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.ready', ready: 'yes' }, ERR.BAD_MSG);
-    await expectError(c, { t: 'room.removeBot', seat: 9 }, ERR.BAD_MSG);
+    await expectError(c, { t: 'room.removeBot', seat: MAX_SEATS }, ERR.BAD_MSG);
     await expectError(c, { t: 'g.buy', slot: -1 }, ERR.BAD_MSG);
     await expectError(c, { t: 'g.move', uid: 1, to: { area: 'moon' } }, ERR.BAD_MSG);
     await expectError(c, { t: 'ping', c: 'x' }, ERR.BAD_MSG);
@@ -542,8 +542,9 @@ describe('websocket lobby', () => {
     assert.equal(st.mode, 'coop');
     assert.equal(st.difficulty, 'HARD');
     assert.equal(st.inMatch, false);
-    assert.equal(st.seats.length, MAX_SEATS);
-    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true });
+    assert.equal(st.seats.length, BASE_SEATS);
+    // ③c (0.2.4): a seat carries its chosen skins (`null` = the default models, bots too) — the waiting room shows them
+    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true, skins: null });
     assert.deepEqual(st.seats.slice(1), [null, null, null]);
 
     const guest = await pool.player('Guest');
@@ -607,6 +608,71 @@ describe('websocket lobby', () => {
   });
 
   // community report #26 (a remake feature): spectator seats — server/lobby.js header
+  // 0.2.4 「切换到观战」 (the owner's request, 2026-10-12): out of a seat, before the start only, with the host rule
+  // and the three refusals the client also greys the button out for
+  test('切换到观战: a seat becomes a spectator seat; the host migrates; a full strip / a last doctor / a running match are refused', async () => {
+    // TestClient.waitFor consumes the FIRST matching frame of the inbox: `newest` reads the whole log instead, for the
+    // assertions that must prove a refusal changed nothing at all
+    const newest = (c) => [...c.log].reverse().find((m) => m.t === 'room.state');
+    const host = await pool.player('Host');
+    const st = await createRoom(host);
+    const mate = await pool.player('Mate');
+    await joinRoom(mate, st.code);
+    // host → spectator: the existing migration rule hands the room over and promotes the new host to P1
+    await expectOk(host, { t: 'room.spectate', code: st.code });
+    const afterHost = await mate.waitFor('room.state', (s) => s.spectators.some((x) => x.playerId === host.id));
+    assert.equal(afterHost.hostId, mate.id, 'the host migrated to the lowest-seat human');
+    assert.equal(afterHost.seats[0].playerId, mate.id, 'and took P1 while the room still waits');
+    assert.deepEqual(afterHost.spectators.map((x) => x.playerId), [host.id], 'the old host watches');
+    assert.ok(!afterHost.seats.some((x) => x && x.playerId === host.id), 'its seat is free');
+    // the last seated doctor cannot hand the room to nobody: a spectator never keeps a room alive
+    await expectError(mate, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
+    assert.equal(newest(mate).seats[0].playerId, mate.id, 'the refusal leaves it seated');
+    assert.equal(newest(mate).spectators.length, 1, 'and the strip unchanged');
+    // sitting back down goes through room.join, and frees the spectator seat again
+    host.clearInbox();
+    const seated = await joinRoom(host, st.code);
+    assert.equal(seatOf(seated, host.id).seat, 1, 'the first free seat');
+    assert.deepEqual(seated.spectators, [], 'the spectator seat was released');
+    // a full spectator strip refuses a seated doctor as well
+    const w1 = await pool.player('W1'); const w2 = await pool.player('W2');
+    await expectOk(w1, { t: 'room.spectate', code: st.code });
+    await expectOk(w2, { t: 'room.spectate', code: st.code });
+    const full = await host.waitFor('room.state', (s) => s.spectators.length === MAX_SPECTATORS);
+    assert.equal(full.seats.filter(Boolean).length, 2, 'both player seats intact');
+    await expectError(mate, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
+    await expectError(host, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
+    assert.equal(newest(host).seats.filter(Boolean).length, 2, 'and the refusals moved nothing');
+    // a solo room has no spectator seat at all
+    const solo = await pool.player('Solo');
+    const soloSt = await createRoom(solo, 'solo', 'FUNNY');
+    await expectError(solo, { t: 'room.spectate', code: soloSt.code }, ERR.ROOM_FULL);
+    assert.equal(newest(solo).seats[0].playerId, solo.id, 'still in its only seat');
+    // THE OWNER'S HARD RULE: once the simulation runs a seated player cannot switch — and nothing moves
+    const h2 = await pool.player('Host2'); const st2 = await createRoom(h2);
+    const m2 = await pool.player('Mate2'); await joinRoom(m2, st2.code);
+    await expectOk(m2, { t: 'room.ready', ready: true });
+    await expectOk(h2, { t: 'room.start' });
+    await h2.waitFor('m.public');
+    const before = newest(h2);
+    assert.equal(before.inMatch, true);
+    h2.clearInbox();
+    const refused = await h2.request({ t: 'room.spectate', code: st2.code });
+    assert.equal(refused.t, 'error', JSON.stringify(refused));
+    assert.equal(refused.code, ERR.ROOM_STARTED, 'the server refuses a seated player once the match runs');
+    await h2.expectNone('room.state');                       // and the refusal broadcasts nothing at all
+    const after = newest(h2);
+    assert.equal(after, before, 'not one room.state frame moved');
+    assert.equal(seatOf(after, h2.id).seat, 0, 'the seat is untouched');
+    assert.deepEqual(after.spectators, [], 'and so is the spectator strip');
+    assert.equal((await m2.request({ t: 'room.spectate', code: st2.code })).code, ERR.ROOM_STARTED, 'the same from the other seat');
+    // an OUTSIDER may still take a spectator seat of a running match — that baseline path is not narrowed
+    const late = await pool.player('Late');
+    await expectOk(late, { t: 'room.spectate', code: st2.code });
+    const lateState = await late.waitFor('room.state', (s) => s.inMatch && s.spectators.some((x) => x.playerId === late.id));
+    assert.deepEqual(lateState.seats.filter(Boolean).map((x) => x.playerId).sort(), [h2.id, m2.id].sort(), 'both players keep their seats');
+  });
+
   test('spectator seats: join / cap / leave / host removal; never a player, never acting, never keeping a room', async () => {
     const host = await pool.player('Host');
     const st = await createRoom(host);
@@ -620,7 +686,18 @@ describe('websocket lobby', () => {
     assert.ok(!v1.seats.some((x) => x && x.playerId === s1.id), 'never in a player seat');
     await host.waitFor('room.state', (s) => s.spectators.length === 1);
     await expectOk(s1, { t: 'room.spectate', code: st.code }); // idempotent
-    await expectError(guest, { t: 'room.spectate', code: st.code }, ERR.ALREADY); // a player never switches in place
+    // 0.2.4 「切换到观战」 (the owner's request, 2026-10-12): a SEATED doctor may give the seat up and watch in place
+    await expectOk(guest, { t: 'room.spectate', code: st.code });
+    const switched = await host.waitFor('room.state', (s) => s.spectators.some((x) => x.playerId === guest.id));
+    assert.ok(!switched.seats.some((x) => x && x.playerId === guest.id), 'the player seat is freed');
+    assert.deepEqual(switched.seats.filter(Boolean).map((x) => x.playerId), [host.id], 'and nobody else moved');
+    assert.equal(switched.spectators.length, 2, 'the doctor now holds a spectator seat');
+    await expectError(guest, { t: 'room.ready', ready: true }, ERR.SPECTATOR);
+    // and it can sit back down through the existing seat entry (room.join of the same room)
+    guest.clearInbox(); // the inbox still holds the frames from before the switch
+    const back = await joinRoom(guest, st.code);
+    assert.equal(seatOf(back, guest.id).seat, 1, 'back in its own seat');
+    assert.deepEqual(back.spectators.map((x) => x.playerId), [s1.id], 'its spectator seat is freed again');
     // a spectator may not act
     await expectError(s1, { t: 'room.ready', ready: true }, ERR.SPECTATOR);
     for (const msg of [{ t: 'room.start' }, { t: 'room.addBot' }, { t: 'room.setDifficulty', difficulty: 'HARD' }, { t: 'room.removeSpectator', playerId: s1.id }]) {
@@ -740,13 +817,13 @@ describe('websocket lobby', () => {
     await expectOk(host, { t: 'room.leave' });
     const migrated = await a.waitFor('room.state', (s) => s.hostId !== host.id);
     assert.equal(migrated.hostId, a.id, 'lowest remaining seat becomes host');
-    assert.equal(migrated.seats[0], null);
+    assert.equal(migrated.seats[0]?.playerId, a.id, 'the waiting-room host moves to P1');
     await b.waitFor('room.state', (s) => s.hostId === a.id);
 
-    // new joiner takes the lowest free seat (0); host stays with A
+    // new joiner takes the lowest free seat (1); host stays with A at P1
     const c = await pool.player('C');
     const joined = await joinRoom(c, st.code);
-    assert.equal(seatOf(joined, c.id).seat, 0);
+    assert.equal(seatOf(joined, c.id).seat, 1);
     assert.equal(joined.hostId, a.id);
     await expectOk(a, { t: 'room.addBot' });
     const withBot = await c.waitFor('room.state', (s) => s.seats[3]?.isBot);
@@ -877,7 +954,7 @@ describe('websocket lobby', () => {
     assert.equal(w.token, guest.token);
     const restored = await back.waitFor('room.state');
     assert.equal(restored.code, st.code);
-    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true });
+    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true, skins: null }, '③c: a resumed seat carries its skins again (null here)');
     await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.connected === true);
 
     // an unknown token just creates a new identity
@@ -970,9 +1047,17 @@ describe('websocket lobby', () => {
     const clients = [];
     for (let i = 0; i < 5; i++) clients.push(await pool.player(`F${i}`));
     const codes = () => [...srv.lobby.rooms.keys()];
+    // 0.2.4 「切换到观战」: room.spectate on one's OWN room now succeeds (the seat becomes a spectator seat), so this
+    // walk aims it at other rooms only — pulling its own doctors out of their seats would cost exactly the
+    // start/ready coverage the fuzz is for, and the seat→spectator path has its own test above.
+    const spectateCode = (c) => {
+      const mine = (code) => { const r = srv.lobby.rooms.get(code); return !!r && (!!r.seatOf(c.id) || !!r.spectatorOf(c.id)); };
+      const others = codes().filter((code) => !mine(code));
+      return pick([...others, ...others.map((x) => x.toLowerCase()), 'ZZZZ']) || 'QQQQ';
+    };
     const gTypes = ['g.infoReady', 'g.band', 'g.bandSkip', 'g.buy', 'g.refresh', 'g.freeze', 'g.levelUp', 'g.sell', 'g.move', 'g.equip', 'g.art', 'g.destroy', 'g.reward', 'g.choice', 'g.ready', 'g.emote', 'g.watch', 'g.autoplay', 'g.leave'];
     const junk = [1, -1, 1.5, 'x', '', null, true, [], {}, { area: 'board', row: 1, col: 1 }, 'A'.repeat(70), 2 ** 40];
-    const gen = () => {
+    const gen = (c) => {
       const r = rnd();
       if (r < 0.12) return { t: 'room.create', mode: pick(['solo', 'coop', 'coop', 'x']), difficulty: pick(['FUNNY', 'NORMAL', 'HARD', 'ABYSS', 'nope']) };
       if (r < 0.25) return { t: 'room.join', code: pick([...codes(), 'ZZZZ', 'abc', ...codes().map((c) => c.toLowerCase())]) || 'QQQQ' };
@@ -991,13 +1076,14 @@ describe('websocket lobby', () => {
       // spectator seats (community report #26)
       if (r < 0.95) {
         return rnd() < 0.7
-          ? { t: 'room.spectate', code: pick([...codes(), 'ZZZZ', ...codes().map((c) => c.toLowerCase())]) || 'QQQQ' }
+          ? { t: 'room.spectate', code: spectateCode(c) }
           : { t: 'room.removeSpectator', playerId: pick([...clients.map((x) => x.id), 'p_nope', 1]) };
       }
       return pick([{ t: 'hello', name: pick(['Re', '', 'x'.repeat(20)]) }, { t: 'ping', c: pick([1, 'x']) }, { t: pick(['nope', '__proto__', 'toString']) }, { t: 'room.join', code: pick(junk) }]);
     };
     const okCounts = {};
-    for (let i = 0; i < 500; i++) {
+    // 900 instead of 500: with the spectator switch in the mix the walk needs more steps to reach an INFO_CHECK
+    for (let i = 0; i < 900; i++) {
       const k = Math.floor(rnd() * clients.length);
       let c = clients[k];
       if (rnd() < 0.04) { // drop & resume
@@ -1008,7 +1094,7 @@ describe('websocket lobby', () => {
         clients[k] = c = back;
         continue;
       }
-      const msg = gen();
+      const msg = gen(c);
       const reply = await c.request(msg, 3000);
       assert.ok(['ok', 'error', 'welcome', 'pong'].includes(reply.t));
       if (reply.t === 'ok') okCounts[msg.t] = (okCounts[msg.t] || 0) + 1;
@@ -1193,7 +1279,7 @@ describe('lobby timers and match interface', () => {
     await joinRoom(guest, st.code);
     await host.terminate();
     const migrated = await guest.waitFor('room.state', (s) => s.hostId === guest.id, GRACE + 1000);
-    assert.equal(migrated.seats[0], null);
+    assert.equal(migrated.seats[0]?.playerId, guest.id);
     await expectOk(guest, { t: 'room.addBot' });
   });
 

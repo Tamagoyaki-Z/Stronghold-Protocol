@@ -50,6 +50,91 @@
 }
 .seats--solo { grid-template-columns: 3.8rem minmax(0, 6.4rem); }
 
+.room-capacity { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .08rem .16rem; min-height: .52rem; padding: .04rem .3rem; color: var(--text-lo); font-size: calc(.16 * var(--t)); }
+.room-capacity__label b, .room-capacity__count { color: var(--mint-400); font-size: calc(.2 * var(--t)); }
+.room-capacity__options { display: flex; gap: .06rem; }
+.room-capacity__opt { min-width: .48rem; height: .36rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .35); color: var(--text-lo); font-family: var(--font-num); font-size: calc(.18 * var(--t)); }
+.room-capacity__opt:hover:not(:disabled) { border-color: var(--mint-500); color: var(--text-hi); }
+.room-capacity__opt.is-active { border-color: var(--mint-500); background: var(--mint-a20); color: var(--mint-400); }
+.room-capacity__opt:disabled { opacity: .35; cursor: default; }
+.room-ai-limit { display: inline-flex; align-items: center; gap: .06rem; padding: .04rem .08rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .3); font-size: calc(.14 * var(--t)); white-space: nowrap; }
+.room-ai-limit .icon { width: .16rem; height: .16rem; }
+.room-ai-limit.is-full { color: var(--amber); border-color: var(--amber); }
+.room-ai-limit > span { font-size: calc(.12 * var(--t)); }
+.room-matchmaking { display: inline-flex; align-items: center; justify-content: center; gap: .05rem; min-height: .36rem; padding: 0 .1rem; border: 1px solid var(--mint-700); background: var(--mint-a10); color: var(--mint-400); font-size: calc(.14 * var(--t)); white-space: nowrap; }
+.room-matchmaking .icon { width: .15rem; height: .15rem; }
+.room-matchmaking.is-private { border-color: var(--amber); background: rgba(255, 180, 80, .08); color: var(--amber); }
+button.room-matchmaking:hover:not(:disabled) { border-color: var(--text-hi); color: var(--text-hi); }
+button.room-matchmaking:disabled { opacity: .45; cursor: default; }
+
+/* 「A 组 4 人 · B 组 4 人」 in the room's info bar — one chip per group, in that group's colour. Nothing while the
+   room is a single shared pool (five players or fewer). */
+.room-groups { display: flex; align-items: center; gap: .1rem; flex-basis: 100%; justify-content: center; }
+/* The group totals always take their own line under 人数上限 (the bar wraps; :has() is unavailable here). */
+.room-capacity { row-gap: .04rem; }
+.room-groups__item {
+  display: flex;
+  align-items: center;
+  gap: .03rem;
+  padding: .01rem .08rem;
+  background: transparent;
+  background: color-mix(in srgb, var(--group-color, var(--mint-500)) 16%, transparent);
+  border: 1px solid var(--group-color, var(--mint-500));
+  color: var(--group-color, var(--mint-400));
+  font-size: calc(.15 * var(--t));
+  line-height: 1.2;
+}
+.room-groups__item b { font-weight: 700; }
+.room-groups__item .num { font-weight: 700; }
+
+.seats--expanded, .seats--dense { grid-template-rows: none; align-content: stretch; overflow: auto; scrollbar-width: thin; }
+.seats--expanded { grid-auto-rows: minmax(2.7rem, 1fr); gap: .14rem; padding: .12rem .45rem; }
+.seats--ten { grid-template-columns: repeat(5, minmax(0, 3.08rem)); }
+.seats--expanded .seat { padding: .1rem .14rem; gap: .03rem; }
+.seats--expanded .seat__art { margin: 0; }
+.seats--expanded .seat__art .avatar { --av: 1.3rem; }
+.seats--expanded .seat__radar { width: .84rem; height: .84rem; }
+.seats--expanded .seat__name { font-size: calc(.22 * var(--t)); }
+.seats--expanded .seat__foot { min-height: .34rem; margin-top: 0; padding-top: .03rem; }
+
+.seats--dense { grid-template-columns: repeat(5, minmax(0, 3.08rem)); grid-auto-rows: minmax(1.48rem, 1fr); gap: .1rem; padding: .08rem .36rem; }
+.seats--dense .seat { display: grid; grid-template-columns: .72rem minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; align-items: center; gap: .02rem .08rem; padding: .06rem .1rem; }
+.seats--dense .seat__head { grid-column: 1 / -1; gap: .06rem; }
+.seats--dense .seat__no { font-size: calc(.17 * var(--t)); }
+.seats--dense .seat__head .micro { font-size: calc(.11 * var(--t)); }
+.seats--dense .seat__host { font-size: calc(.11 * var(--t)); padding: 0 .04rem; }
+.seats--dense .seat__art { grid-column: 1; grid-row: 2; align-self: center; margin: 0; border: 0; background: none; }
+.seats--dense .seat__art .avatar { --av: .68rem; }
+.seats--dense .seat__bot-label, .seats--dense .seat__stripes, .seats--dense .seat__radar, .seats--dense .seat > .micro { display: none; }
+.seats--dense .seat__who { grid-column: 2; grid-row: 2; min-width: 0; }
+.seats--dense .seat__name { max-width: 100%; font-size: calc(.18 * var(--t)); }
+.seats--dense .seat__foot { grid-column: 1 / -1; grid-row: 3; justify-content: space-between; min-height: .25rem; margin: 0; padding: 0; }
+.seats--dense .seat__state { font-size: calc(.14 * var(--t)); }
+.seats--dense .seat__state .icon { width: .16rem; height: .16rem; }
+.seats--dense .seat__foot .tt-anchor { position: static; }
+.seats--dense .seat__actions { position: static; }
+.seats--dense .seat__foot .btn--sm { min-height: .25rem; height: .25rem; padding: 0 .08rem; font-size: calc(.12 * var(--t)); }
+.seats--dense .seat--empty .seat__art { grid-column: 1 / -1; }
+.seats--dense .seat__wait { font-size: calc(.14 * var(--t)); }
+/* The dense (11+) cards are short: the group chip shrinks to fit the same header. */
+.seats--dense .seat__group { padding: 0 .04rem; font-size: .11rem; letter-spacing: 0; }
+
+/* ---- fixed draft groups (more than five players) ---------------------------------------------------------- */
+.seat-groups {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .24rem;
+  min-height: .38rem;
+  padding: 0 .3rem;
+  color: var(--text-lo);
+  font-size: calc(.15 * var(--t));
+}
+.seat-groups__mine { display: flex; align-items: center; gap: .06rem; color: var(--mint-400); }
+.seat-groups__mine .icon { width: .17rem; height: .17rem; }
+.seat-groups__rule { color: var(--text-dim); }
+
 .seat {
   --bk-c: var(--line-3);
   --bk-l: .18rem;
@@ -83,6 +168,37 @@
 }
 .seat__head { align-self: stretch; display: flex; align-items: center; gap: .1rem; }
 .seat__no { font-size: calc(.22 * var(--t)); font-weight: 700; color: var(--text-md); padding-left: .08rem; border-left: 3px solid var(--line-3); line-height: 1.1; }
+/* 分组 (owner's decision 2026-10-10): the fixed draft group of this seat. Shown once a room splits into several
+   groups (more than five players); a room of five or fewer shares one pool and shows no chip. The group colour is
+   the --group-color the seat card carries (A green, B orange, C purple, D blue, E pink; room.js GROUP_COLORS). */
+.seat__group {
+  display: flex;
+  align-items: center;
+  gap: .03rem;
+  margin-left: .04rem;
+  padding: .02rem .08rem;
+  background: transparent;
+  background: color-mix(in srgb, var(--group-color, var(--mint-500)) 18%, transparent);
+  border: 1px solid var(--group-color, var(--mint-500));
+  color: var(--group-color, var(--mint-400));
+  font-size: calc(.14 * var(--t));
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+/* The card's own group colour: a 3px left edge (the seat::before light bar keeps the ready/offline colour and the
+   avatar keeps its SEAT_HUES tint — the group colour never touches either). */
+.seat.is-grouped::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--group-color, var(--mint-500));
+  pointer-events: none;
+}
 .seat__host {
   margin-left: auto;
   display: flex;
@@ -149,7 +265,11 @@
   padding-top: .1rem;
   border-top: 1px solid var(--line);
 }
-.seat__foot .tt-anchor { position: absolute; right: .14rem; bottom: .14rem; }
+.seat__actions { position: absolute; right: .14rem; bottom: .14rem; display: flex; align-items: center; gap: .06rem; }
+.seat__actions .tt-anchor { position: static; }
+/* The generic mobile 44 px hit area would cover the adjacent crown/remove button. Keep the vertical expansion,
+   but restrict these paired controls horizontally to their own side of the visible gap. */
+.sp-coarse .room-screen .seat__actions .btn::before { width: calc(100% + .06rem); }
 .seat__state { display: flex; align-items: center; gap: .06rem; font-size: calc(.18 * var(--t)); font-weight: 700; letter-spacing: .06em; }
 .seat__state .icon { width: .22rem; height: .22rem; }
 .seat__state--ready { color: var(--mint-400); }
@@ -313,3 +433,29 @@
 .ready-count__icons .icon.is-on { color: var(--mint-400); filter: drop-shadow(0 0 4px var(--mint-glow)); }
 
 .room-bar .btn--xl { min-width: 3.2rem; letter-spacing: .2em; }
+
+/* ---- ⇄ 换位 (LoL-style seat swap: room.swapAsk / room.swapAnswer) ---------------------------------- */
+/* The ⇄ on another doctor's card (greyed out by the server's own rules: unready seats only), the asker's waiting bar
+   and the asked player's dialog. Colours ride the existing room palette; every color-mix() is preceded by a plain
+   rgba() fallback for browsers without it. */
+.seat__swap { display: flex; justify-content: flex-end; align-items: center; }
+.seat__swapping { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 1px 6px; font-size: 10px;
+  letter-spacing: .06em; color: var(--mint); border: 1px solid rgba(78, 216, 175, .45);
+  border: 1px solid color-mix(in srgb, var(--mint) 45%, transparent); border-radius: 2px; }
+.seat__swapping .icon { width: .9em; height: .9em; }
+.swapbar { display: flex; align-items: center; gap: 10px; margin: 0 auto 8px; padding: 6px 12px; width: fit-content;
+  max-width: min(720px, 94vw); background: rgba(78, 216, 175, .08); border: 1px solid rgba(78, 216, 175, .38);
+  background: color-mix(in srgb, var(--mint) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mint) 38%, transparent); border-radius: 3px; }
+.swapbar__icon { color: var(--mint); flex: none; }
+.swapbar__text { color: var(--txt); font-size: 13px; }
+.swapdlg { position: fixed; inset: 0; z-index: var(--z-modal, 400); display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 11, .72); background: color-mix(in srgb, #05080b 72%, transparent); }
+.swapdlg__box { width: min(420px, 92vw); padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel, #0d1418); border: 1px solid rgba(78, 216, 175, .45);
+  border: 1px solid color-mix(in srgb, var(--mint) 45%, transparent); }
+.swapdlg__title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 18px; color: var(--txt); }
+.swapdlg__title .icon { color: var(--mint); }
+.swapdlg__text { margin: 0; font-size: 14px; color: var(--txt); line-height: 1.6; }
+.swapdlg__count { margin: 0; font-size: 13px; color: var(--lo); letter-spacing: .04em; }
+.swapdlg__btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }

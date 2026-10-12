@@ -581,7 +581,7 @@ describe('drafts', () => {
     const sp2 = normalizeSp({ cards: [{}, {}], order: ['b', 'a'], turn: 0, picks: [{ playerId: 'b', idx: 1 }, { playerId: 'x', idx: 9 }] }, players);
     assert.equal(sp2.turnPid, 'b'); assert.equal(sp2.cards[1].takenBy, 'b'); assert.equal(sp2.pickOf.has('x'), false);
     assert.equal(normalizeSp(null), null);
-    assert.equal(normalizeSp({ cards: new Array(9).fill({}) }).cards.length, 6, 'at most 6 cards');
+    assert.equal(normalizeSp({ cards: new Array(23).fill({}) }).cards.length, 6, 'at most six cards per group');
   });
   test('personal choice: only the living recipient in the current PREP, independent of the public draft', () => {
     const pub = { phase: PHASE.PREP, round: 14, sp: { family: 'supply', cards: ['global'] } };
@@ -721,8 +721,20 @@ describe('keyboard & settings', () => {
   });
   test('sanitizeSettings', () => {
     assert.deepEqual(sanitizeSettings(null), { ...DEFAULT_SETTINGS });
+    // 性能模式: 只有显式 true 才算开 —— 旧存档（没有这个字段）与任何别的值都保持关，行为和以前完全一致
+    assert.equal(DEFAULT_SETTINGS.performanceMode, false, 'the default keeps every existing player on the old path');
+    assert.equal(sanitizeSettings(null).performanceMode, false);
+    assert.equal(sanitizeSettings({ performanceMode: true }).performanceMode, true);
+    assert.equal(sanitizeSettings({ performanceMode: true }).quality, DEFAULT_SETTINGS.quality, '画质 is never rewritten by 性能模式');
+    for (const raw of ['true', 1, 'yes', null, {}, 'on']) assert.equal(sanitizeSettings({ performanceMode: raw }).performanceMode, false, JSON.stringify(raw));
+    // 乐观界面反馈: 默认开（旧存档没有这个字段 ⇒ 开）；只有显式 false 才关
+    assert.equal(DEFAULT_SETTINGS.optimisticFeedback, true, 'the approved plan A default is ON');
+    assert.equal(sanitizeSettings(null).optimisticFeedback, true);
+    assert.equal(sanitizeSettings({ bgm: 0.4 }).optimisticFeedback, true, 'a profile saved before the setting existed');
+    assert.equal(sanitizeSettings({ optimisticFeedback: false }).optimisticFeedback, false);
+    for (const raw of ['false', 0, 'no', null, {}, 'off']) assert.equal(sanitizeSettings({ optimisticFeedback: raw }).optimisticFeedback, true, JSON.stringify(raw));
     assert.deepEqual(sanitizeSettings({ bgm: 3, sfx: -1, voice: 2, muted: 'yes', damageNumbers: false, quality: 'ultra' }),
-      { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', voiceOverrides: {}, muted: false, damageNumbers: false, officialDamageNumbers: false, quality: 'high', textSize: 'sm', keys: { ...DEFAULT_SETTINGS.keys } },
+      { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', voiceOverrides: {}, resolution: 'auto', muted: false, damageNumbers: false, officialDamageNumbers: false, quality: 'high', performanceMode: false, optimisticFeedback: true, textSize: 'sm', keys: { ...DEFAULT_SETTINGS.keys } },
       'a saved profile without `keys` (before 0.2.0) gets the default key map (test/ui/feedback5-hotkeys.test.js)');
     assert.equal(sanitizeSettings({ bgm: 0.5 }).voice, DEFAULT_SETTINGS.voice, 'a saved profile without `voice` gets the default');
     // 语音语言 (0.2.2): 中文 by default — a profile saved before it, or any other value, plays the Chinese dub
@@ -732,6 +744,13 @@ describe('keyboard & settings', () => {
     for (const bad of ['en', 'kr', 'JP', 'ja', 1, null]) assert.equal(sanitizeSettings({ voiceLang: bad }).voiceLang, 'cn', String(bad));
     assert.equal(sanitizeSettings({ bgm: 0.333 }).bgm, 0.33);
     assert.equal(sanitizeSettings({ quality: 'low' }).quality, 'low');
+    // 干员语音 language (中日语音): only cn/jp survive; a save from before the switch, or a hand-edited value, is cn
+    assert.equal(DEFAULT_SETTINGS.voiceLang, 'cn', 'the default keeps every existing player on Chinese');
+    for (const raw of [undefined, null, '', 'jp2', 'JP', 'en', 'kr', 7, {}, []]) {
+      assert.equal(sanitizeSettings({ voiceLang: raw }).voiceLang, 'cn', `${JSON.stringify(raw)} ⇒ cn`);
+    }
+    assert.equal(sanitizeSettings({ voiceLang: 'jp' }).voiceLang, 'jp');
+    assert.deepEqual(sanitizeSettings({ voiceLang: 'jp' }), { ...DEFAULT_SETTINGS, voiceLang: 'jp' }, 'only the language changes');
   });
 });
 

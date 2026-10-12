@@ -9,6 +9,9 @@
 //     to that direction (DESIGN §3), shows as orange striped tiles (view.highlightTiles group 'facing' under the units
 //     + a striped SVG layer — slotted between the 3D board canvas and the Pixi canvas when the 3D board is on, so the
 //     units stand on the stripes; an overlay otherwise); outside the centre the tooltip "拖回中心区域取消" shows;
+//   * or tap a chevron directly (W2): press previews that side, release commits it — two taps instead of one drag, which
+//     is what a phone wants (the chevron's own hit circle is r=22 of the wheel's 100-unit half-diagonal, so it does not
+//     steal a press meant for the centre);
 //   * on the mirrored right half of the Final Assault prep a screen direction maps to its board direction (RIGHT ↔
 //     LEFT, facing.js boardDir): the chevrons follow the finger, the range / model / intent use the board direction;
 //   * release outside the centre commits (g.move {uid, to, dir} / g.art {…, dir}); release inside the centre, a tap
@@ -28,6 +31,7 @@ import { LocalSprite } from './gameComponents.js';
 import { DIRS, DIR_LABEL, DEAD_ZONE_TILES, dirFromDelta, dirFromKey, rangeTiles, normDir, boardDir, viewMirrored } from './facing.js';
 import { facingSwallows, facingEnter } from './gameLogic.js';
 import { settingsStore } from './settings.js';
+import { audio } from '../audio.js';
 import { t } from '../../../shared/i18n.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -171,9 +175,39 @@ export function useTileScreen(view, row, col) {
 /** Chevron centre (viewBox units, diamond half-diagonal = 100) and rotation per direction. */
 const CHEV = { UP: [0, -64, -90], RIGHT: [64, 0, 0], DOWN: [0, 64, 90], LEFT: [-64, 0, 180] };
 
-function Chevron({ dir, on }) {
+/**
+ * One direction chevron: a tap target of its own.
+ *
+ * A tap on the chevron PREVIEWS that direction on press and COMMITS it on release — the whole wheel is then usable with
+ * two taps (tap the tile, tap a side) instead of a press-and-drag from the centre, which is what a phone wants. The
+ * centre drag still works: the chevron stops the pointer events it handles from reaching the overlay, so the two
+ * gestures never fight (see FacingWheel's onDown/onUp).
+ *
+ * `r=22` is the hit circle (viewBox units, the wheel's half-diagonal being 100): it covers the chevron and a little
+ * around it without swallowing the centre dead-zone, so a press meant for "drag from the middle" is not stolen.
+ */
+function Chevron({ dir, on, onPick }) {
   const [x, y, rot] = CHEV[dir];
-  return html`<g class=${cx('fwheel__chev', on && 'is-on')} transform=${`translate(${x} ${y}) rotate(${rot})`}>
+  const [down, setDown] = useState(false);
+  return html`<g class=${cx('fwheel__chev', (on || down) && 'is-on')} transform=${`translate(${x} ${y}) rotate(${rot})`}
+      onPointerDown=${(e) => {
+        if (e.button != null && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();                       // the overlay's centre-drag must not also claim this pointer
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+        setDown(true);
+        onPick?.(dir, false);
+      }}
+      onPointerUp=${(e) => {
+        if (!down) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDown(false);
+        onPick?.(dir, true);
+      }}
+      onPointerCancel=${(e) => { e.stopPropagation(); setDown(false); }}
+      onContextMenu=${(e) => e.stopPropagation()}>
+    <circle class="fwheel__chevhit" cx="0" cy="0" r="22" />
     <path d="M-9 -15 L3 0 L-9 15 L-3 15 L9 0 L-3 -15 Z" />
   </g>`;
 }
@@ -209,6 +243,20 @@ export function FacingWheel({ view, row, col, grid, name = '', onPreview, onComm
     const d = dirFromDelta(clientX - L.g.x, clientY - L.g.y, L.dead);
     setDir(d);
     return d;
+  };
+
+  /**
+   * A tap on a chevron (W2): press previews, release commits. The commit goes through the same `onCommit(boardDir(…))`
+   * path as a centre drag, so the mirrored right half of the Final Assault prep keeps working.
+   */
+  const onPick = (d, commit) => {
+    const L = live.current;
+    const changed = L.dir !== d;
+    if (changed) {
+      setDir(d);
+      try { audio?.sfx?.('tab', { volume: 0.35 }); } catch { /* audio is never required */ }
+    }
+    if (commit) L.onCommit(boardDir(d, L.mirror));
   };
   const inside = (clientX, clientY) => {
     const L = live.current;
@@ -278,7 +326,7 @@ export function FacingWheel({ view, row, col, grid, name = '', onPreview, onComm
         <path class=${cx('fwheel__quad', dir === 'DOWN' && 'is-on')} d="M0 100 L-50 50 L0 0 L50 50 Z" />
         <path class=${cx('fwheel__quad', dir === 'LEFT' && 'is-on')} d="M-100 0 L-50 -50 L0 0 L-50 50 Z" />
         <path class="fwheel__inner" d=${`M0 ${-DEAD_ZONE_TILES / 1.5 * 100} L${DEAD_ZONE_TILES / 1.5 * 100} 0 L0 ${DEAD_ZONE_TILES / 1.5 * 100} L${-DEAD_ZONE_TILES / 1.5 * 100} 0 Z`} />
-        ${DIRS.map((d) => html`<${Chevron} key=${d} dir=${d} on=${dir === d} />`)}
+        ${DIRS.map((d) => html`<${Chevron} key=${d} dir=${d} on=${dir === d} onPick=${onPick} />`)}
       </svg>
       <button type="button" class="fwheel__cancel" onPointerDown=${(e) => e.stopPropagation()}
         onClick=${(e) => { e.stopPropagation(); onCancel(); }} aria-label=${t('点击取消')}>

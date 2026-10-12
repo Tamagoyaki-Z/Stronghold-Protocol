@@ -13,13 +13,24 @@ export function uiUrl(m, key) {
 
 /**
  * Operator avatar for a chess record (golden → E2 art when present).
+ *
+ * 干员皮肤 (docs/SKINS.md): `skinId` swaps in the skin's own 180×180 thumbnail. Without it the 干员调配 roster, the
+ * shop cards and the prep underframe kept drawing the DEFAULT portrait after a skin was chosen — the choice only
+ * reached the board models, never the operator's picture.
  * @param {any} m manifest
  * @param {any} chess chess.json record (or { assets: { avatar } })
+ * @param {string|null} [skinId] a chosen skin's id (`char_498_inside@kitchen#2`)
  */
-export function chessAvatarUrl(m, chess) {
+export function chessAvatarUrl(m, chess, skinId = null) {
   const chars = obj(obj(m)?.chars);
   const id = str(chess?.assets?.avatar) || str(chess?.charId);
   if (!chars || !id) return null;
+  if (skinId) {
+    // the skin catalogue lives under the OPERATOR id (assets.json `chars[charId].skins[skinId]`)
+    const skin = obj(obj(chars[id])?.skins)?.[skinId] || obj(obj(chars[str(chess?.charId)])?.skins)?.[skinId];
+    const art = str(skin?.avatar);
+    if (art) return art;
+  }
   if (id.endsWith('_2') && !chars[id]) {
     const base = chars[id.slice(0, -2)];
     return str(base?.avatarE2) || str(base?.avatar);
@@ -49,6 +60,42 @@ export function chessPortraitUrl(m, chess) {
   const byChar = chess?.charId ? chars[chess.charId] : null;
   if (!byChar) return null;
   return (chess?.isGolden ? str(byChar.portraitE2) : null) || str(byChar.portrait);
+}
+
+/**
+ * 立绘 URL：选了皮肤就用皮肤的 180×180 头像，否则回退原立绘。
+ *
+ * 皮肤 (docs/SKINS.md) 只带 180×180 头像与战斗骨骼，**不含 ~2.5 MB 的 `skin/{portraitId}b.png`**，所以
+ * 原本要立绘的地方（商店卡片、详情头图）就用头像顶上。`skinId` 由调用方传入而不是在这里读 store，
+ * 以保持本文件所有函数都是纯函数。传入的 key 应是**基础棋子 id**（精锐卡用 baseId），与服务端
+ * server/lobby.js freezeSkins 和对局渲染 public/js/render/app.js 同一口径。
+ * @param {any} m manifest
+ * @param {any} chess chess.json 记录
+ * @param {string|null} [skinId] 已选皮肤的 id（char_102_texas@epoque#7）
+ */
+export function chessArtUrl(m, chess, skinId = null) {
+  if (skinId && hasSkin(m, chess, skinId)) {
+    const skinAvatar = chessAvatarUrl(m, chess, skinId);
+    if (skinAvatar) return skinAvatar;
+  }
+  return chessPortraitUrl(m, chess);
+}
+
+/**
+ * Whether the manifest really carries this skin for this operator.
+ *
+ * `chessAvatarUrl` answers with *something* for an unknown skinId too (its `_2` branch hands back the E2 art of the
+ * operator), so a caller that wants "a skin, or exactly the plain portrait" — the shop card is one — has to ask the
+ * catalogue instead of the URL helper. The catalogue is keyed by the OPERATOR id, the same two keys chessAvatarUrl
+ * tries (the record's `assets.avatar`, then `charId`).
+ * @param {any} m manifest @param {any} chess chess.json record @param {string|null} skinId
+ */
+function hasSkin(m, chess, skinId) {
+  const chars = obj(obj(m)?.chars);
+  if (!chars || !skinId) return false;
+  const id = str(chess?.assets?.avatar) || str(chess?.charId);
+  const rec = (id ? obj(obj(chars[id])?.skins)?.[skinId] : null) || obj(obj(chars[str(chess?.charId)])?.skins)?.[skinId];
+  return !!str(rec?.avatar);
 }
 
 /** Skill icon of a chess record (manifest `skills[iconId]`, else the empty skill sprite). */

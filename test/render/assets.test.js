@@ -521,6 +521,41 @@ describe('createAssets store', () => {
     assert.equal((await a.image('/bad.png')).src, '/bad.png');
   });
 
+  test('setDownloadMode throttles the on-demand loads only while a match is on (defaults untouched)', async () => {
+    let live = 0, peak = 0;
+    const release = [];
+    const drain = () => new Promise((r) => setTimeout(r, 0)); // the store starts a load in a microtask
+    const a = createAssets({
+      manifest: M,
+      loadImage: (u) => new Promise((resolve) => { live++; peak = Math.max(peak, live); release.push(() => { live--; resolve({ src: u }); }); }),
+    });
+    // 平时：不限并发，和以前一样（这些请求必须已经全部发出去了）
+    const plain = Promise.all(['/1.png', '/2.png', '/3.png', '/4.png'].map((u) => a.image(u)));
+    await drain();
+    assert.equal(live, 4, 'outside a match every image request starts at once');
+    release.splice(0).forEach((fn) => fn());
+    await plain;
+    // 对局中：并发上限 2（给同一条家宽上的 WebSocket 让路），4 张图 → 先 2 张，完成后才放行后面的
+    assert.equal(a.setDownloadMode(true), true);
+    assert.equal(a.downloadLimit, 2);
+    assert.equal(a.spine.cache.concurrency, 2, 'the spine loader is tightened with it (assets.js RefLru)');
+    peak = 0; // 只看对局中这一段（上一段不限并发时峰值必然是 4）
+    const throttled = Promise.all(['/5.png', '/6.png', '/7.png', '/8.png'].map((u) => a.image(u)));
+    await drain();
+    assert.equal(live, 2, 'at most two downloads on the wire during a match');
+    assert.equal(peak, 2);
+    release.splice(0).forEach((fn) => fn());
+    await drain();
+    assert.equal(live, 2, 'the next two go out when the first two are done');
+    release.splice(0).forEach((fn) => fn());
+    const done = await throttled;
+    assert.deepEqual(done.map((x) => x.src), ['/5.png', '/6.png', '/7.png', '/8.png'], 'order and results are unchanged');
+    // 回到大厅：恢复默认（不限制）
+    assert.equal(a.setDownloadMode(false), true);
+    assert.equal(a.downloadLimit, Infinity);
+    assert.equal(a.spine.cache.concurrency, 6, 'the spine loader goes back to its default too');
+  });
+
   test('spine acquire/release through the store with an injected loader', async () => {
     const a = createAssets({ manifest: M, loadSpine: async (e) => ({ animations: [], from: e.skel }), unloadSpine: () => {}, spineMax: 1 });
     const e = a.spineEntry('char_002_amiya');

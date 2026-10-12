@@ -47,6 +47,10 @@ async function main() {
   const view = await createFieldView($('field'), {
     data, assets, settings: { quality: q.get('quality') || 'high', damageNumbers: true },
     ...(q.has('aa') ? { antialias: q.get('aa') !== '0' } : {}),
+    // Board theme (dev): `?theme=map/autochesssand` renders the 沙地 world instead of the default one. The world
+    // textures are baked when the pack is created, so this must arrive HERE and not through a later `setStage` — which
+    // is exactly why the game resolves its own stage before creating the view (render/board3d/theme.js).
+    ...(q.get('theme') ? { boardTheme: q.get('theme') } : {}),
   });
   demo.view = view;
   window.__view = view;

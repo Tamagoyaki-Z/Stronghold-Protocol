@@ -18,7 +18,7 @@ export const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 /** startServer() options handed on to net.js Network / lobby.js Lobby (an absent one keeps that module's default). */
 const NET_OPTION_KEYS = ['reconnectWindowMs', 'heartbeatMs', 'helloTimeoutMs', 'ratePerSec', 'rateBurst', 'maxConnections', 'abuseDropsPerSec',
   'maxConnectionsPerAddr', 'heavyPerSec', 'heavyBurst', 'trustProxy'];
-const LOBBY_OPTION_KEYS = ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs'];
+const LOBBY_OPTION_KEYS = ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs', 'swapTtlMs'];
 
 /**
  * Bind address used when neither the `host` option nor `HOST` says otherwise: one dual-stack socket, so the server
@@ -67,6 +67,7 @@ export function serveDirs(opts) {
 /** net.js Network options out of the startServer() options; `trustProxy` falls back to TRUST_PROXY. */
 export function netOptionsFrom(opts) {
   const netOptions = {};
+  if (typeof opts.compactWire === 'boolean') netOptions.compactWire = opts.compactWire;
   for (const k of NET_OPTION_KEYS) {
     if (opts[k] != null) netOptions[k] = opts[k];
   }

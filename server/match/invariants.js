@@ -38,7 +38,7 @@ export function collectViolations(m, { limit = 25 } = {}) {
   const out = [];
   const fail = (msg) => { if (out.length < limit) out.push(msg); };
   const gd = m.gd;
-  const held = new Map();
+  const heldByPool = new Map(m.poolGroups.map((g) => [g.pool, new Map()]));
   const uids = new Set();
   const banned = new Set(m.bannedChess || []);
   const note = (ps, p) => {
@@ -53,6 +53,8 @@ export function collectViolations(m, { limit = 25 } = {}) {
 
   for (const ps of m.players.values()) {
     const id = ps.playerId;
+    const held = heldByPool.get(ps.pool);
+    if (!held) { fail(`${id}: no assigned pool`); continue; }
     // the player's view of the data (its slotted 自选 slots are its operators) and the copies its 自选 pieces hold
     const pgd = ps.gd || gd;
     const diyHeld = new Map();
@@ -194,23 +196,30 @@ export function collectViolations(m, { limit = 25 } = {}) {
     for (const [base, n] of diyHeld) if (!(ps.diyStock && ps.diyStock.has(base)) && n !== 0) fail(`${id}: 自选 slot ${base} without stock holds ${n} copies`);
   }
 
-  // shared pool accounting
-  for (const [base, e] of m.pool.entries) {
-    if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`pool ${base}: balance ${e.left} cap ${e.cap}`);
-    const h = held.get(base) || 0;
-    if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
+  // Each group conserves its own copies; a balanced global total alone would hide a cross-group return bug.
+  for (const { id, pool } of m.poolGroups) {
+    const held = heldByPool.get(pool);
+    for (const [base, e] of pool.entries) {
+      if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`pool ${id}/${base}: balance ${e.left} cap ${e.cap}`);
+      const h = held.get(base) || 0;
+      if (e.left + h !== e.cap) fail(`pool ${id}/${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
+    }
+    for (const [base, n] of held) if (!pool.has(base) && n !== 0) fail(`non-pool chess ${id}/${base} holds ${n} copies`);
   }
-  for (const [base, n] of held) if (!m.pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
 
   // Fixed operator gifts may overdraw equipment stock; ownership still counts and keeps shop availability at zero.
   // Other item families retain their cap. The chess pool above also permits explicit overdraw (Mimic).
-  if (m.itemPool && gd.raw.items) {
+  // Shared shop equipment. Fixed SERVER_GAIN_EQUIP identities may be granted after the cap and therefore may have
+  // held > cap; every other item must still conserve its stock. The marker is deliberately not used for accounting.
+  for (const group of m.poolGroups) {
+    const stock = group.itemPool;
+    if (!stock || !gd.raw.items) continue;
     for (const [id, rec] of Object.entries(gd.raw.items)) {
       if (!rec || rec.isGolden) continue;
-      const cap = m.itemPool.cap(id);
+      const cap = stock.cap(id);
       if (!Number.isInteger(cap)) continue;
-      const h = m.itemPool.held(id);
-      if (h > cap && !gd.isUnlimitedGiftItem(id)) fail(`item ${id}: held ${h} > cap ${cap}`);
+      const h = stock.held(id);
+      if (h > cap && !gd.isTraitFixedItem(id)) fail(`item group ${group.id}/${id}: held ${h} > cap ${cap}`);
     }
   }
 

@@ -435,7 +435,7 @@ describe('net.js', () => {
     assert.ok(ws().last('ping'), 'latency probe before hello');
     net.setName('  凯尔希  ');
     const hello = ws().last('hello');
-    assert.deepEqual({ ...hello, rid: 0 }, { t: 'hello', rid: 0, name: '凯尔希', version: PROTOCOL_VERSION, token: 'tok-1' });
+    assert.deepEqual({ ...hello, rid: 0 }, { t: 'hello', rid: 0, name: '凯尔希', version: PROTOCOL_VERSION, wire: 1, token: 'tok-1' });
     assert.equal(net.status, 'handshaking');
     ws().recv({ t: 'welcome', rid: hello.rid, playerId: 'p_1', token: 't', name: '凯尔希', serverNow: Date.now() });
     assert.equal(net.status, 'online');
@@ -538,12 +538,93 @@ describe('net.js', () => {
     timers.advance(40);
     ws().recv({ t: 'pong', c: ping.c, s: ping.c + 20 + 5000 });
     assert.equal(net.ping, 40);
+    assert.equal(net.pingRaw, 40, 'the raw sample of that probe');
     assert.equal(net.clockOffset, 5000);
     assert.ok(clocks.at(-1).synced);
     assert.ok(Math.abs(net.serverNow() - (timers.now() + 5000)) <= 1);
     ws().recv({ t: 'pong', c: 'garbage', s: 1 });
     ws().recv({ t: 'pong', c: timers.now() + 99999, s: 1 }); // negative rtt ignored
     assert.equal(net.ping, 40);
+    assert.equal(net.pingRaw, 40, 'an ignored sample never becomes the raw value');
+  });
+
+  test('the displayed ping is the minimum of the last five samples; pingRaw keeps the last one', async () => {
+    const { net, ws, timers } = await onlineNet();
+    const sample = async (rtt) => {
+      net.probe();
+      const ping = ws().last('ping');
+      timers.advance(rtt);
+      ws().recv({ t: 'pong', c: ping.c, s: 1 });
+    };
+    await sample(120); // a jittered first sample: the display follows it (it is the only one)
+    assert.equal(net.ping, 120);
+    assert.equal(net.pingRaw, 120);
+    await sample(44);  // the real RTT: the minimum takes over, the raw value follows the sample
+    assert.equal(net.ping, 44, 'the minimum of [120, 44]');
+    assert.equal(net.pingRaw, 44);
+    await sample(280); // a GC pause: jitter can only push a sample UP
+    assert.equal(net.ping, 44, 'the minimum of [120, 44, 280] — the display is not fooled');
+    assert.equal(net.pingRaw, 280, 'the tooltip still shows the raw sample');
+    assert.equal(net.snapshot().pingRaw, 280, 'snapshot carries pingRaw (the ping pill reads it)');
+    for (const rtt of [45, 43, 46, 47]) await sample(rtt); // six samples now: the oldest fall out of the window
+    assert.equal(net._pingSamples.length, 5, 'the window holds the last five samples');
+    assert.equal(net.ping, Math.min(...net._pingSamples));
+    assert.equal(net.ping, 43, '120 and 280 have left the window');
+    assert.equal(net.pingRaw, 47);
+  });
+
+  test('lag compensation: the window median replaces the window maximum', async () => {
+    const { lagEstimate } = await mod('net.js');
+    assert.equal(lagEstimate([]), 0);
+    assert.equal(lagEstimate([{ drift: 250 }]), 250);
+    assert.equal(lagEstimate([{ drift: 250 }, { drift: 8 }]), 8, 'an even sample count takes the lower middle');
+    assert.equal(lagEstimate([{ drift: 250 }, { drift: 8 }, { drift: 6 }]), 8);
+    assert.equal(lagEstimate([{ drift: 5 }, { drift: 6 }, { drift: 250 }, { drift: 9 }, { drift: 7 }]), 7,
+      'one extreme tick cannot lift the estimate (the window maximum would report 250)');
+  });
+
+  test('lag compensation: never below the window\'s smallest raw rtt, never 0', async () => {
+    const { compensateRtt, LAG_FLOOR_MS } = await mod('net.js');
+    assert.equal(LAG_FLOOR_MS, 20);
+    // (a) over-subtraction (the reported bug: raw 200 ms shown as 0 ms): the window floor holds
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: 190 }), 190, 'clamped up to the smallest raw rtt of the window');
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: 200 }), 200);
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: null }), LAG_FLOOR_MS, 'the absolute floor holds on an empty window');
+    assert.equal(compensateRtt(200, { lag: 200, minRaw: 200 }), 200, 'the reported "current 0 ms (raw 200 ms)" cannot come back');
+    assert.ok(compensateRtt(200, { lag: 9999, minRaw: 1 }) >= LAG_FLOOR_MS);
+    // (b) a normal estimate still compensates
+    assert.equal(compensateRtt(200, { lag: 30, minRaw: 40 }), 170);
+    // (c) nothing to compensate
+    assert.equal(compensateRtt(60, { lag: 0, minRaw: 60 }), 60);
+    assert.equal(compensateRtt(0, { lag: 0, minRaw: 0 }), 0);
+  });
+
+  test('the probe reports the typical drift, not the worst tick', async () => {
+    const { lagEstimate, LAG_PROBE_INTERVAL_MS } = await mod('net.js');
+    const timers = fakeTimers();
+    let late = 0; // how far behind its 100 ms schedule the probe callback runs this tick
+    const { net } = await onlineNet({ timers, now: timers.now, clock: () => timers.now() + late });
+    timers.advance(LAG_PROBE_INTERVAL_MS); // the anchor tick only records the baseline
+    for (let i = 1; i <= 9; i++) { late = i * 10; timers.advance(LAG_PROBE_INTERVAL_MS); }
+    assert.ok(net._lagSamples.length >= 8, `kept the window samples (${net._lagSamples.length})`);
+    assert.equal(net._loopLag, Math.round(lagEstimate(net._lagSamples)), 'the estimate is the window statistic');
+    const worst = Math.max(...net._lagSamples.map((s) => s.drift));
+    assert.ok(net._loopLag < worst, `the worst tick (${worst}) must not set the estimate (${net._loopLag})`);
+    assert.ok(net._loopLag > 0, 'a steadily late timer still reports lag');
+  });
+
+  test('a heavily delayed pong is never displayed as 0 ms', async () => {
+    const { net, ws, timers } = await onlineNet();
+    net._loopLag = 250; // the over-subtracting estimate a 10 s worst-case window produced
+    net.probe();
+    const ping = ws().last('ping');
+    timers.advance(200);
+    ws().recv({ t: 'pong', c: ping.c, s: 1 });
+    assert.equal(net.pingRaw, 200, 'the tooltip still shows the raw round trip');
+    assert.ok(net.ping > 0, `the display cannot collapse to 0 (got ${net.ping})`);
+    const minRaw = Math.min(...net._rawSamples.map((s) => s.rtt));
+    assert.ok(net.ping >= minRaw, `the display stays at or above the window's smallest raw rtt (${minRaw})`);
+    assert.ok(net.ping >= 20, `and above the absolute floor (got ${net.ping})`);
   });
 
   test('silent socket is detected and replaced', async () => {
@@ -620,6 +701,40 @@ describe('net.js', () => {
     assert.equal(errs.length, 1);
     assert.match(errs[0].message, /版本/);
     await assert.rejects(p, (e) => e.code === 'OFFLINE');
+  });
+
+  test('emergency-refused visitors wait for the server retry window with jitter; focus and repeat errors do not churn', async () => {
+    const { net, ws, sockets, timers } = await makeNet();
+    const errors = [];
+    net.on('helloError', (e) => errors.push(e.code));
+    net.setName('A'); ws().open();
+    ws().recv({ t: 'm.emergency', active: true, retryAt: timers.now() + 120000 });
+    ws().recv({ t: 'error', rid: ws().last('hello').rid, code: 'SERVER_EMERGENCY' });
+    ws().drop(1008);
+    assert.equal(net.retryAt - timers.now(), 122500);
+    net.retryNow(); net.reconnectNow(); net.connect();
+    assert.equal(sockets.length, 1, 'automatic focus / online retries cannot skip emergency backoff');
+    timers.advance(122499);
+    assert.equal(sockets.length, 1);
+    timers.advance(1); ws().open();
+    ws().recv({ t: 'm.emergency', active: true, retryAt: timers.now() + 5000 });
+    ws().recv({ t: 'error', rid: ws().last('hello').rid, code: 'SERVER_EMERGENCY' });
+    ws().drop(1008);
+    assert.equal(net.retryAt - timers.now(), 32500, 'near retry windows retain a reasonable lower limit');
+    assert.deepEqual(errors, ['SERVER_EMERGENCY'], 'the persistent notice needs no repeated error toast');
+    timers.advance(32500); ws().open();
+    ws().recv({ t: 'welcome', rid: ws().last('hello').rid, playerId: 'p_1', token: 't', name: 'A' });
+    ws().drop();
+    assert.equal(net.retryAt - timers.now(), 500, 'accepted identity returns to normal reconnect');
+    net.close();
+  });
+
+  test('existing match members keep normal reconnect during emergency without a hello rejection', async () => {
+    const { net, ws, timers } = await onlineNet();
+    ws().recv({ t: 'm.emergency', active: true, retryAt: timers.now() + 120000 });
+    ws().drop();
+    assert.equal(net.retryAt - timers.now(), 500);
+    net.close();
   });
 
   test('pushes are emitted by type and "*"; unsolicited errors as unhandledError; junk ignored', async () => {
@@ -1073,7 +1188,7 @@ describe('screen helpers', () => {
     assert.equal(codeArg('ZZZ QQQ', ''), 'ZZZQ', 'a real string is still truncated to ROOM_CODE_LEN');
   });
 
-  test('lobby: battlefield note per difficulty (标准 fixed 战场#01, 险境 8 / 绝境·终极 7 random) matches config.json modes[].stages', async () => {
+  test('lobby: battlefield note per difficulty (标准 fixed 战场#01, 险境 9 / 绝境·终极 7 random) matches config.json modes[].stages', async () => {
     const { difficultyInfo, stageNote, stageLabel, STAGE_POOL } = await mod('screens/lobby.js');
     const cfg = JSON.parse(readFileSync(path.join(ROOT, 'data/config.json'), 'utf8'));
     for (const [modeId, m] of Object.entries(cfg.modes)) {
@@ -1085,17 +1200,39 @@ describe('screen helpers', () => {
     // config.json not loaded here: the embedded fallback
     for (const room of ['solo', 'coop']) {
       assert.equal(difficultyInfo(room, 'FUNNY').stageNote, '战场固定为 战场#01');
-      assert.equal(difficultyInfo(room, 'NORMAL').stageNote, '战场随机（共8张）');
+      assert.equal(difficultyInfo(room, 'NORMAL').stageNote, '战场随机（共9张）');
       assert.equal(difficultyInfo(room, 'HARD').stageNote, '战场随机（共7张）');
       assert.equal(difficultyInfo(room, 'ABYSS').stageNote, '战场随机（共7张）');
     }
     assert.equal(difficultyInfo('coop', 'BOGUS').stageNote, '');
-    assert.equal(stageNote(cfg.modes.mode_multi_normal.stages), '战场随机（共8张）');
+    assert.equal(stageNote(cfg.modes.mode_multi_normal.stages), '战场随机（共9张）');
     assert.equal(stageNote(['act1autochess_m01']), '战场固定为 战场#01');
     assert.equal(stageNote([]), '');
     assert.equal(stageNote(null), '');
     assert.equal(stageLabel('act2autochess_m02'), '战场#06', 'act2 continues the numbering');
     assert.equal(stageLabel('nope'), '');
+  });
+
+  test('切换到观战: the button follows the server gate (running match / solo / full seats / last doctor)', async () => {
+    const { spectateSwitchGate } = await mod('screens/room.js');
+    const seat = (pid, extra = {}) => ({ seat: 0, playerId: pid, name: pid, isBot: false, ready: false, connected: true, ...extra });
+    const room = (over = {}) => ({ code: 'ABCD', hostId: 'me', mode: 'coop', difficulty: 'NORMAL', inMatch: false,
+      seats: [seat('me'), seat('you', { seat: 1 })], spectators: [], ...over });
+    assert.deepEqual(spectateSwitchGate(room(), 'me'), { can: true, reason: '' }, 'a waiting co-op room with a free seat');
+    assert.equal(spectateSwitchGate(room({ inMatch: true }), 'me').reason, '开局后无法切换观战', 'the owner\'s hard rule');
+    assert.equal(spectateSwitchGate(room({ mode: 'solo' }), 'me').reason, '单人局没有观战席');
+    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }, { playerId: 'b' }] }), 'me').reason, '观战席已满');
+    assert.equal(spectateSwitchGate(room({ spectators: [{ playerId: 'a' }] }), 'me').can, true, 'one free seat is enough');
+    const alone = spectateSwitchGate(room({ seats: [seat('me')] }), 'me');
+    assert.equal(alone.can, false, 'the last doctor would disband the room');
+    assert.match(alone.reason, /唯一的博士/);
+    assert.equal(spectateSwitchGate(room({ seats: [null, seat('you', { seat: 1 })], spectators: [{ playerId: 'me' }] }), 'me').can, false, 'a spectator has no seat to give up');
+    assert.equal(spectateSwitchGate(room({ seats: [seat('you')] }), 'me').can, false, 'nor has an outsider');
+    // the card really consumes it (not a gate that nothing reads)
+    const src = readFileSync(path.join(PUBLIC, 'js/screens/room.js'), 'utf8');
+    assert.match(src, /disabled=\$\{!spectateGate\.can \|\| !online\}/, 'the button is disabled by the gate');
+    assert.match(src, /data-spectate=\$\{spectateGate\.can \? 'on' : 'off'\}/);
+    assert.match(src, /t\(spectateGate\.reason\)/, 'and its tooltip falls back to the gate\'s reason');
   });
 
   test('room: normalizeSeats / roomFacts / inviteLink', async () => {
@@ -1111,7 +1248,8 @@ describe('screen helpers', () => {
     };
     assert.equal(normalizeSeats(room).length, 4);
     assert.equal(normalizeSeats({ mode: 'solo', seats: [room.seats[0], null, null, null] }).length, 1);
-    assert.deepEqual(normalizeSeats({ mode: 'coop', seats: 'bad' }), [null, null, null, null]);
+    assert.deepEqual(normalizeSeats({ mode: 'coop', seats: 'bad' }), Array(8).fill(null), 'a legacy room without seats uses the default eight-seat capacity');
+    assert.deepEqual(normalizeSeats({ mode: 'coop', capacity: 20, seats: [] }), Array(20).fill(null));
     let f = roomFacts(room, 'h');
     assert.equal(f.isHost, true);
     assert.equal(f.canStart, false, 'guest not ready');

@@ -160,6 +160,14 @@ export function parseArgs(argv) {
     else if (k === '--add-only') o.addOnly = true;
     else if (k === '--local-spines') o.localSpines = true;
     else if (k === '--voice-lang') { if (!VOICE_DIRS[v]) throw new Error(`unknown --voice-lang ${v} (cn | jp | en | kr)`); o.voiceLang = v; }
+    // 中日语音: plan several languages in one pass (comma-separated). The first is the primary (`audio.voice`).
+    else if (k === '--voice-langs') {
+      const langs = String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
+      for (const l of langs) if (!VOICE_DIRS[l]) throw new Error(`unknown --voice-langs entry ${l} (cn | jp | en | kr)`);
+      if (!langs.length) throw new Error('--voice-langs needs at least one language (cn,jp)');
+      o.voiceLangs = langs;
+      if (!langs.includes(o.voiceLang)) o.voiceLang = langs[0];
+    }
     else if (k === '--voice-all') o.voiceAll = true;
     else if (k === '--help' || k === '-h') o.help = true;
     else throw new Error(`unknown option ${a}\n${HELP}`);
@@ -404,6 +412,7 @@ async function main() {
   const localTokenSpines = await syncLocalSpines(opts, 'token');
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData, charword, voiceLang: opts.voiceLang,
+    voiceLangs: opts.voiceLangs,
     // default: only the slots a battle can play (plan.mjs VOICE_BATTLE_SLOTS); --voice-all takes the whole official set
     voiceSlots: opts.voiceAll ? null : undefined,
     extraEnemyIds: Object.keys(dataEnemies || {}),

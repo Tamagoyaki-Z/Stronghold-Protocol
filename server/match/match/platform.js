@@ -7,10 +7,12 @@
 import { C2S } from '../../../shared/protocol.js';
 import { PHASE, ERR } from '../../../shared/constants.js';
 import { syntheticResult } from '../fields.js';
+import { bossPoolHp } from '../finalAssault.js';
 import { FLOW_TICKER_PRIORITY, OK, fail } from './common.js';
 import { msg } from '../../../shared/i18n.js';
 
 const GAME_TYPES = new Set(Object.keys(C2S).filter((t) => Object.hasOwn(C2S, t) && (t.startsWith('g.') || t.startsWith('b.'))));
+const EMERGENCY_SAFE_TYPES = new Set(['g.watch', 'g.leave']);
 
 export class MatchPlatform {
   start() {
@@ -41,9 +43,10 @@ export class MatchPlatform {
     if (this.disposed || this.ended) {
       // a battle report that crossed the match end (the last b.progress of a field) is stale: ignored, never an error
       // (DESIGN §14 — an error frame without a rid would surface as a toast in the browser)
-      return this.clientCombat && msg && (msg.t === 'b.progress' || msg.t === 'b.result') ? OK : fail(ERR.WRONG_PHASE);
+      return this.clientCombat && msg && (msg.t === 'b.progress' || msg.t === 'b.result' || msg.t === 'b.yield') ? OK : fail(ERR.WRONG_PHASE);
     }
     if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string' || !GAME_TYPES.has(msg.t)) return fail(ERR.BAD_MSG);
+    if (this.emergencyFrozen && !EMERGENCY_SAFE_TYPES.has(msg.t)) return fail(ERR.SERVER_EMERGENCY);
     let res;
     try {
       res = this._handle(ps, msg);
@@ -66,6 +69,7 @@ export class MatchPlatform {
    * @returns {{ ok: true } | { error: string, detail?: string }}
    */
   setLoadout(playerId, loadout, ops = undefined) {
+    if (this.emergencyFrozen) return fail(ERR.SERVER_EMERGENCY);
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
     if (this.disposed || this.ended || this.phase !== PHASE.INFO_CHECK) return fail(ERR.WRONG_PHASE, 'loadout locked for this match');
@@ -77,16 +81,38 @@ export class MatchPlatform {
     return res;
   }
 
+  /**
+   * room.skins during the match (docs/SKINS.md): replace a player's chosen operator skins.
+   * Unlike the loadout there is no phase gate — a skin is cosmetic and public to the teammates, so it may change
+   * in any phase; the lobby already checked the keys against the data (PlayerState.setSkins re-checks them).
+   * @param {string} playerId
+   * @param {Record<string, string> | null} skins
+   * @returns {{ ok: true } | { error: string, detail?: string }}
+   */
+  setSkins(playerId, skins) {
+    const ps = this.players.get(playerId);
+    if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
+    let res = OK;
+    this.guard(() => {
+      if (!ps.setSkins(skins)) { res = fail(ERR.BAD_TARGET, 'skins do not match the game data'); return; }
+      this.markPublic();
+    });
+    return res;
+  }
+
   onDisconnect(playerId) {
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || this.disposed) return;
     this.guard(() => {
       ps.connected = false;
+      this.refreshDraftPriority(playerId);
+      this.refreshUniteSkipVote();
       // A disconnected human's silence is never consent to a new setup.
       this.cancelSetupVote();
       // a paused solo battle resumes (the server takes the field over; nobody is left to resume it)
       this._resume();
-      if (this.clientCombat) this._authorityLost(ps, 'disconnect');
+      if (this.emergencyFrozen) this._emergencyLostAuthorities.add(playerId);
+      else if (this.clientCombat) this._authorityLost(ps, 'disconnect');
       this.markPublic();
     });
   }
@@ -97,6 +123,8 @@ export class MatchPlatform {
     this.guard(() => {
       const was = ps.connected;
       ps.connected = true;
+      this.refreshDraftPriority(playerId);
+      this.refreshUniteSkipVote();
       this._resync(ps);
       if (!was) this.markPublic();
     });
@@ -135,15 +163,18 @@ export class MatchPlatform {
       this.cancelSetupVote();
       ps.connected = false;
       ps.autoplay = false;
+      this.refreshUniteSkipVote();
       this.watchers.delete(playerId);
       if (this.ended) return;
       this._resume();
-      if (this.clientCombat) this._authorityLost(ps, 'left');
+      if (this.emergencyFrozen) this._emergencyLostAuthorities.add(playerId);
+      else if (this.clientCombat) this._authorityLost(ps, 'left');
       this.markPublic();
       if (!this.order.some((p) => !p.isBot && !p.left)) {
         this.finish({ victory: false, reason: 'abandoned' });
         return;
       }
+      if (this.emergencyFrozen) { this._emergencyLeaves.add(playerId); return; }
       this._quit(ps);
     });
   }
@@ -161,12 +192,15 @@ export class MatchPlatform {
     const d = this.draft;
     if (phase === PHASE.BAND_DRAFT && d && !d.picks[ps.playerId]) {
       // the departed seat passes its turn with the default band (never one a teammate holds — defaultBand)
-      const turn = this.draftTurn() === ps.playerId;
+      const group = this.draftGroup(ps.playerId);
+      const turn = this.draftTurn(ps.playerId) === ps.playerId;
       d.picks[ps.playerId] = this.defaultBand(ps.playerId);
+      if (group) group.picks[ps.playerId] = d.picks[ps.playerId];
       ps.bandId = d.picks[ps.playerId];
-      if (turn) this.startDraftTurn();
+      if (turn) this.startDraftTurn(group);
     }
     const passedRound = phase === PHASE.SETTLE ? this.round + 1 : Math.max(1, this.round);
+    const leavingBossLayers = phase === PHASE.FINAL_ASSAULT ? ps.activatedLayers() : 0;
     // its own normal battle has nobody left to fight for
     for (const f of this.fields) {
       if (f.live && f.kind === 'normal' && f.players.length === 1 && f.players[0] === ps.playerId) {
@@ -180,6 +214,12 @@ export class MatchPlatform {
     }
     ps.lp = 0;
     ps.eliminate(passedRound);
+    if (phase === PHASE.FINAL_ASSAULT) this.hiddenLayerSum = Math.max(0, this.hiddenLayerSum - leavingBossLayers);
+    if (this.bossPool && (phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && this.alivePlayers().length) {
+      const bossId = phase === PHASE.HIDDEN_CORE ? this.hiddenBossId : this.bossId;
+      this.bossPool.rescale(bossPoolHp(this.gd, bossId, this.alivePlayers().length));
+      this._broadcastPool(true);
+    }
     this.tickerText(msg('{name}博士中途退出了模拟', { name: ps.name }), FLOW_TICKER_PRIORITY);
     if (this.bossWaves && (phase === PHASE.ROUND_START || phase === PHASE.SP_DRAFT || phase === PHASE.PREP)) {
       // before the boss fight: pair the players left again (the prep preview shows the new partner / template); a
@@ -196,18 +236,20 @@ export class MatchPlatform {
       this.finish({ victory: false, reason: 'eliminated' });
       return;
     }
-    if (phase === PHASE.SP_DRAFT && this.sp && this.spTurn() === ps.playerId) this.startSpTurn();
+    if (phase === PHASE.SP_DRAFT && this.sp && this.spTurn(ps.playerId) === ps.playerId) this.startSpTurn(this.spGroup(ps.playerId));
     else if (phase === PHASE.PREP) this.maybeEndPrep();
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this._emergencyLeaves.clear();
+    this._emergencyLostAuthorities.clear();
     if (this.runner) { try { this.runner.stop(); } catch { /* ignore */ } }
     this._stopClientCombat();
     for (const h of this._timers) { try { this.sched.clearTimeout(h); } catch { /* ignore */ } }
     this._timers.clear();
     if (this._pubTimer) { try { this.sched.clearTimeout(this._pubTimer); } catch { /* ignore */ } this._pubTimer = null; }
-    if (this.ownsScheduler) this.sched.dispose();
+    this.sched.dispose();
   }
 }

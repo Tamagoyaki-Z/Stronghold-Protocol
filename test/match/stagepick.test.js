@@ -2,8 +2,14 @@
 // (data/config.json modes[].stages, stage weight 50 each):
 //   * 标准模拟 (FUNNY, solo & co-op) and 入门协议 use ONLY 战场#01 (act1autochess_m01) — official, kept: the lobby's default
 //     difficulty is 标准, so back-to-back 标准 matches always play 战场#01;
-//   * 险境模拟 (NORMAL) picks uniformly among 8 stages (战场#01–#08), 绝境 / 终极 (HARD / ABYSS) among 7 (no 战场#01),
-//     with the match seed (Match: createRng(deriveSeed(seed, 'setup')), a fresh random seed per lobby match).
+//   * 险境模拟 (NORMAL) picks uniformly among 9 stages (战场#01–#08 plus 沙地), 绝境 / 终极 (HARD / ABYSS) among 7
+//     (no 战场#01), with the match seed (Match: createRng(deriveSeed(seed, 'setup')), a fresh random seed per lobby match).
+//
+// LOCAL DELTA (project owner's decision, 2026-10-08): 沙地 (act1autochess_m06, 战场#06(上半) 沙尘暴/土石结构) was
+// `active: false, weight: 0` and outside every mode's list, so the map could never be played even though its data and
+// its local-client art were both present. It is now active, weight 50, and in 险境 (NORMAL) only — the mode its own
+// record declares (`modes: ["mode_single_normal"]`). 标准 keeps 战场#01 alone and 绝境/终极 keep their 7, as upstream
+// had them. Its battlefield is drawn with the 沙地 theme (public/js/render/board3d/theme.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GameData } from '../../server/match/gamedata.js';
@@ -12,19 +18,20 @@ import { createRng, deriveSeed } from '../../server/sim/rng.js';
 import { DATA, makeMatch } from './harness.js';
 
 const M01 = 'act1autochess_m01';
+const SAND = 'act1autochess_m06';
 const REST = ['act1autochess_m02', 'act1autochess_m03', 'act1autochess_m04', 'act2autochess_m01', 'act2autochess_m02', 'act2autochess_m03', 'act2autochess_m04'];
 const pick = (modeId, seed) => setupMatchWaves(new GameData(DATA, modeId), createRng(deriveSeed(seed >>> 0, 'setup'))).stageId;
 
-test('mode stage lists: 标准 / 入门 = 战场#01 only; 险境 = 8 stages; 绝境 / 终极 = 7 (no 战场#01); all weight 50', () => {
+test('mode stage lists: 标准 / 入门 = 战场#01 only; 险境 = 9 stages (with 沙地); 绝境 / 终极 = 7 (no 战场#01)', () => {
   const stagesOf = (m) => DATA.config.modes[m].stages.slice().sort();
   for (const t of ['single', 'multi']) {
     assert.deepEqual(stagesOf(`mode_${t}_funny`), [M01], `${t} 标准`);
-    assert.deepEqual(stagesOf(`mode_${t}_normal`), [M01, ...REST].sort(), `${t} 险境`);
+    assert.deepEqual(stagesOf(`mode_${t}_normal`), [M01, ...REST, SAND].sort(), `${t} 险境`);
     assert.deepEqual(stagesOf(`mode_${t}_hard`), REST.slice().sort(), `${t} 绝境`);
     assert.deepEqual(stagesOf(`mode_${t}_abyss`), REST.slice().sort(), `${t} 终极`);
   }
   assert.deepEqual(stagesOf('mode_training_1'), [M01]);
-  for (const id of [M01, ...REST]) assert.ok(DATA.stages[id].active && DATA.stages[id].weight === 50, id);
+  for (const id of [M01, ...REST, SAND]) assert.ok(DATA.stages[id].active && DATA.stages[id].weight === 50, id);
 });
 
 test('险境 / 绝境 / 终极: the match seed picks uniformly among the mode stages; 标准 always 战场#01', () => {

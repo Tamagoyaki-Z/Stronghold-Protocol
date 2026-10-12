@@ -28,9 +28,14 @@ import { ROOT, listenAddress, bindCandidates, serveDirs, makeLogger, parseTrustP
 import { WS_MAX_PAYLOAD, createSessionStack, attachWebSocket } from './http/websocket.js';
 import { DATA_SHIM_JS, createStaticHandler } from './http/static.js';
 import { createPackRegistry } from './packs.js';
+import { createAnnouncementStore } from './announcements.js';
+import { createAnnouncementNoticeMonitor } from './announcementNotices.js';
+import { createServerSettings } from './serverSettings.js';
 import { MIME, COMPRESSIBLE, acceptsGzip, parseRange } from './http/files.js';
 import { BUILD_INPUTS, computeBuildTag, buildTag, resetBuildTag } from './http/buildTag.js';
 import { createRequestHandler } from './http/routes.js';
+import { createAssetCacheHandler } from './http/assetCache.js';
+import { createBandwidthEmergencyController, bandwidthEmergencyOptions } from './bandwidthEmergency.js';
 import { answerClientError } from './http/common.js';
 import { lanUrls, displayHost, isProcessEntry, runMain } from './http/boot.js';
 
@@ -44,38 +49,103 @@ export {
  * Build and start the HTTP + WebSocket server.
  * @param {{
  *   port?: number, host?: string, quiet?: boolean, log?: object,
- *   publicDir?: string, dataDir?: string, sharedDir?: string, packsDir?: string,
+ *   publicDir?: string, dataDir?: string, sharedDir?: string, packsDir?: string, announcementsDir?: string,
+ *   serverSettingsDir?: string,
  *   MatchClass?: Function, seedFn?: () => number,
  *   lobbyGraceMs?: number, reconnectWindowMs?: number, heartbeatMs?: number, helloTimeoutMs?: number,
- *   ratePerSec?: number, rateBurst?: number, maxConnections?: number, maxRooms?: number,
+ *   ratePerSec?: number, rateBurst?: number, maxConnections?: number, maxRooms?: number, compactWire?: boolean, runtimeCache?: boolean,
  *   maxConnectionsPerAddr?: number, maxRoomsPerAddr?: number, maxMatchesPerAddr?: number, resyncMinGapMs?: number,
  *   heavyPerSec?: number, heavyBurst?: number, trustProxy?: 'auto' | boolean, soloReconnectWindowMs?: number,
+ *   assetCacheLimits?: { totalBps?: number, clientBps?: number, maxDownloads?: number, maxDownloadsPerClient?: number },
+ *   assetCacheBuildCatalog?: Function,
+ *   bandwidthEmergency?: object | false,
  * }} [opts]
  * @returns {Promise<{ port: number, host: string, url: string, server: http.Server, wss: import('ws').WebSocketServer,
  *                     lobby: import('./lobby.js').Lobby, network: import('./net.js').Network,
  *                     registry: import('./net.js').SessionRegistry, packs: ReturnType<typeof createPackRegistry>,
+ *                     announcements: ReturnType<typeof createAnnouncementStore>,
+ *                     serverSettings: ReturnType<typeof createServerSettings>,
  *                     close: () => Promise<void> }>}
  */
 export async function startServer(opts = {}) {
+  // Validate operator options before starting any session/watch timers.
+  const emergencyOptions = bandwidthEmergencyOptions(opts.bandwidthEmergency === false ? { enabled: false } : opts.bandwidthEmergency || {});
   const { port, host } = listenAddress(opts);
   const log = opts.log || makeLogger(!!opts.quiet);
   const { publicDir, dataDir, sharedDir, packsDir } = serveDirs(opts);
 
   // The process-wide singleton serves the default data dir; a custom dir (tests) gets its own copy.
   const data = opts.dataDir ? loadData(dataDir, { log }) : getData({ dir: dataDir, log });
+  const serverSettings = createServerSettings({ dir: opts.serverSettingsDir, root: ROOT, log,
+    onChange: (next) => applySettings(next) });
   const { registry, lobby, network } = createSessionStack(opts, { data, log });
+  const announcements = createAnnouncementStore({ dir: opts.announcementsDir, root: ROOT, log });
+  const announcementNotices = createAnnouncementNoticeMonitor({ store: announcements, network, log });
   // content packs (docs/PACKS.md): scanned now — the start log names them — and again whenever their folders change
   const packs = createPackRegistry({ publicDir, dataDir, packsDir }, { log });
   packs.refresh(true);
-  const serveStatic = createStaticHandler({ publicDir, dataDir, sharedDir, packsDir, packs, log });
+  const serveStatic = createStaticHandler({ publicDir, dataDir, sharedDir, packsDir, packs, runtimeCache: opts.runtimeCache, log });
+  // A persisted owner limit overrides the programmatic/env fallback. A null setting means the
+  // default unlimited limiter, while keeping tests and embedders' explicit opts usable.
+  const fallbackAssetCacheLimits = opts.assetCacheLimits;
+  const initialAssetCacheLimits = serverSettings.get().assetCacheLimits ?? fallbackAssetCacheLimits ?? undefined;
+  const assetCache = createAssetCacheHandler({ publicDir, dataDir, log, limits: initialAssetCacheLimits, trustProxy: opts.trustProxy,
+    buildCatalog: opts.assetCacheBuildCatalog, requireAssetCache: () => serverSettings.get().requireAssetCache });
+  let warmingAssetSummary = null;
+  function warmAssetSummary() {
+    if (!warmingAssetSummary) warmingAssetSummary = assetCache.summary()
+      .catch((error) => { log.warn('[asset-cache] admission summary unavailable', error.message); })
+      .finally(() => { warmingAssetSummary = null; });
+    return warmingAssetSummary;
+  }
+  let bandwidthEmergency = null;
+  function applySettings(next) {
+    lobby.setAiLimit(next.maxAiPerRoom);
+    lobby.setAssetCachePolicy({ required: next.requireAssetCache, getSummary: assetCache.currentSummary });
+    assetCache.setLimits(next.assetCacheLimits ?? fallbackAssetCacheLimits);
+    // A persisted owner setting overrides the startup/env fallback and is applied by the
+    // existing private settings poll; an absent field keeps the normal emergency option.
+    bandwidthEmergency?.setEnabled(next.bandwidthEmergencyEnabled ?? emergencyOptions.enabled);
+    // Runtime enabling fails closed until a summary is ready; ordinary optional startup stays lazy.
+    if (next.requireAssetCache && !assetCache.currentSummary()) void warmAssetSummary();
+  }
+  applySettings(serverSettings.get());
+  if (serverSettings.get().requireAssetCache) await warmAssetSummary();
   const startedAt = Date.now();
   // The tag is per process (see buildTag): read the browser runtime once, here, not on every /healthz.
   resetBuildTag();
   buildTag();
 
-  const server = http.createServer(createRequestHandler({ serveStatic, health: { startedAt, network, registry, lobby }, log }));
+  let requestHandler;
+  const bandwidthEmergencyEnabled = serverSettings.get().bandwidthEmergencyEnabled ?? emergencyOptions.enabled;
+  bandwidthEmergency = createBandwidthEmergencyController({
+    ...(opts.bandwidthEmergency || {}), ...emergencyOptions, enabled: bandwidthEmergencyEnabled,
+    getMetrics: () => assetCache.metrics(), getCongestion: () => network.congestion(),
+    canResume: () => [...lobby.rooms.values()].every((room) => !room.match || room.activeHumans().some((seat) => seat.connected)),
+    log,
+    onChange: (state) => {
+      if (state.active) {
+        assetCache.trip(state.reason);
+        requestHandler?.abortPublicRequests();
+        // `finish` only means handed to TCP, not delivered. Close ordinary HTTP sockets too,
+        // including finished keep-alive transfers; Node deliberately excludes upgraded WebSockets.
+        server.closeAllConnections?.();
+      } else assetCache.resume();
+      network.setEmergency(state);
+      lobby.setEmergency(state);
+      log.warn(`[bandwidth-emergency] ${state.active ? state.action === 'retry-delayed'
+        ? '现有对局仍未具备恢复条件，继续保护' : '保护开启，下载和新访问已切断，对局冻结'
+        : '尝试恢复访问和对局'} (${state.reason || 'recovery'})`);
+    },
+  });
+  requestHandler = createRequestHandler({ serveStatic, announcements, assetCache,
+    emergency: () => network.emergency, health: { startedAt, network, registry, lobby, bandwidthEmergency }, log });
+  const server = http.createServer(requestHandler);
   server.on('clientError', answerClientError);
   const wss = attachWebSocket(server, { network, log });
+  // Prime before accepting connections; only commands submitted to a running server are broadcast.
+  announcementNotices.start();
+  serverSettings.start();
 
   // The address actually bound. The default may fall back to IPv4; the returned host and url follow that.
   let boundHost;
@@ -107,10 +177,15 @@ export async function startServer(opts = {}) {
     if (bound === null) throw lastError;
     boundHost = bound;
   } catch (e) {
+    bandwidthEmergency.close();
+    serverSettings.close();
+    assetCache.close();
+    announcementNotices.close();
     network.close(); // stop heartbeat/sweep timers of the half-built server
     throw e;
   }
   server.on('error', (e) => log.error('[http] server error', e));
+  bandwidthEmergency.start();
 
   const addr = server.address();
   const actualPort = typeof addr === 'object' && addr ? addr.port : port;
@@ -120,6 +195,10 @@ export async function startServer(opts = {}) {
   async function close() {
     if (closing) return closing;
     closing = (async () => {
+      bandwidthEmergency.close();
+      serverSettings.close();
+      assetCache.close();
+      announcementNotices.close();
       try { lobby.shutdown('shutdown'); } catch (e) { log.error('[shutdown] lobby', e); }
       network.close();
       await new Promise((resolve) => {
@@ -132,7 +211,8 @@ export async function startServer(opts = {}) {
     return closing;
   }
 
-  return { port: actualPort, host: boundHost, url, server, wss, lobby, network, registry, packs, close };
+  return { port: actualPort, host: boundHost, url, server, wss, lobby, network, registry, packs, announcements, serverSettings,
+    bandwidthEmergency, close };
 }
 
 // `node server/index.js` / npm start: listen, print the banner, stop on SIGINT / SIGTERM (http/boot.js).

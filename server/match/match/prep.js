@@ -98,6 +98,7 @@ export class MatchPrep {
   }
 
   maybeEndPrep() {
+    if (this.emergencyFrozen) return;
     if (this.phase !== PHASE.PREP || this._prepEndQueued) return;
     const allReady = () => { const alive = this.alivePlayers(); return alive.length > 0 && alive.every((p) => p.ready); };
     if (!allReady()) return;

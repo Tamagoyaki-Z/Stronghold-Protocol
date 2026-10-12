@@ -24,6 +24,7 @@ function opsCharIds(raw) {
 
 export class PlayerBasics {
   get isHumanActive() { return !this.isBot && !this.left; }
+  get pool() { return this.m.poolFor(this); }
   /** The engine acts for this seat (AI teammate or "AI 托管"; a departed human is eliminated, so nothing is left to do). */
   get botControlled() { return this.isBot || this.left || this.autoplay; }
 
@@ -122,6 +123,27 @@ export class PlayerBasics {
     if (!chessRecord || this.fieldsStandIn(chessRecord)) return null;
     const rec = chessRecord.isDiy && typeof chessRecord.chessId === 'string' ? this.gd.chess(chessRecord.chessId) || chessRecord : chessRecord;
     return cultivationOf(rec, this.ops);
+  }
+
+  /**
+   * 干员皮肤 (docs/SKINS.md): replace this player's skin choices. `{ [chessId]: skinId }`.
+   * Bots keep the default models (same refusal as `setLoadout`).
+   * @param {Record<string, string>|null} skins
+   * @returns {boolean} whether anything was accepted
+   */
+  setSkins(skins) {
+    if (this.isBot) return false;
+    const out = {};
+    if (skins && typeof skins === 'object' && !Array.isArray(skins)) {
+      for (const [id, skinId] of Object.entries(skins)) {
+        if (typeof skinId !== 'string' || !skinId) continue;
+        const rec = this.gd.chess(id);
+        if (!rec || rec.isGolden || rec.visible === false || rec.isHidden || rec.isDiy || (rec.baseId && rec.baseId !== id)) continue;
+        out[id] = skinId;
+      }
+    }
+    this.skins = Object.freeze(out);
+    return Object.keys(out).length > 0;
   }
 
   /**

@@ -688,6 +688,9 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
     audio: {
       bgm,
       bossBgm: Object.fromEntries(Object.entries(bossBgm).sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))),
+      // `voice` = the primary language (backward compatible); `voiceLanguages` carries EVERY planned language so the
+      // client can offer a language switch. Both are resolved leaves: a slot whose file is missing on disk is dropped,
+      // so a partial language stays honest (the client falls back per slot).
       voice,
       ...(voiceJp ? { voiceJp: voiceTree(VOICE_JP_LANG) } : {}),
       sfx: { ui: sfxUi, battle: sfxBattle, units: unitsSfx },

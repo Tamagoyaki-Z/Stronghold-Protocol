@@ -15,6 +15,7 @@
 
 import { resolveUvTable } from './atlas.js';
 import { parseObj } from './obj.js';
+import { runtimeURL } from '../../runtime.js';
 
 export const THREE_URL = '/vendor/three.module.js';
 
@@ -26,7 +27,8 @@ export function loadThree(url = THREE_URL) {
     // Browsers also cache failed module imports. Two bounded retry URLs permit a transient download failure to
     // recover; clearing only our promise would keep receiving that same cached rejection without another request.
     if (threeFailures >= 3) return Promise.resolve(null);
-    const source = new URL(url, import.meta.url);
+    // Retry query strings bypass exact import-map keys; pin the page's content version first.
+    const source = new URL(runtimeURL(url), import.meta.url);
     if (threeFailures) source.searchParams.set('sp-retry', String(threeFailures));
     const pending = import(/* @vite-ignore */ source.href).then((m) => (m && m.WebGLRenderer ? m : null), () => null).then((m) => {
       if (!m && threePromise === pending) { threePromise = null; threeFailures++; }
@@ -55,6 +57,32 @@ export function webgl2Available(allowSlow = false) {
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * Why the 3D board is or is not used, readable at runtime (dev / field diagnosis).
+ *
+ * `render/app.js` decides with two values — `webgl2Available(allowSlow)` and `boardArtListed(assets)` — and when the
+ * answer is "2D" there is otherwise nothing to read: `stats().board3d` only says `{ on: false }` without saying which
+ * of the two said no. The three booleans here are the whole decision, computed on demand (never at boot).
+ *
+ *   await __SP_BOARD3D_PROBE__() → {
+ *     gl2:     WebGL2 ignoring the "major performance caveat" flag (a software renderer still reports true here),
+ *     gl2fast: WebGL2 as the DEFAULT `auto` mode asks for it (software / blocklisted ⇒ false → 2D),
+ *     listed:  the local-art manifest lists map/autochess/TX_autochessi_D (i.e. the board art is installed),
+ *     url:     the URL that listing resolves to (null when not installed),
+ *   }
+ *
+ * In a browser console on the running game: `await __SP_BOARD3D_PROBE__()`.
+ */
+export async function board3dProbe(assets) {
+  let listed = false, url = null;
+  try {
+    listed = await boardArtListed(assets);
+    url = assets && typeof assets.localUrl === 'function' ? assets.localUrl(...PACK_IMAGES.D) : null;
+  } catch { /* reported as not listed */ }
+  return { gl2: webgl2Available(true), gl2fast: webgl2Available(false), listed, url };
+}
+if (typeof globalThis !== 'undefined') globalThis.__SP_BOARD3D_PROBE__ = board3dProbe;
+
 /** Manifest key → pack slot. */
 export const PACK_IMAGES = Object.freeze({
   D: ['map/autochess', 'TX_autochessi_D'],
@@ -82,6 +110,63 @@ export const GATE_NODES = Object.freeze({
   startDown: 'Start_down', startUp: 'Start_up', startBack: 'Start_back', endDown: 'Start_down1', endUp: 'Start_up1',
 });
 
+/** The world group every board used before themes existed (upstream's own board). */
+export const DEFAULT_BOARD_GROUP = 'map/autochess';
+
+/**
+ * The board's world textures for one theme group, resolved from that group's own `materials.json`.
+ *
+ * A THEME group carries the recoloured set of a scenario — 沙地 (`map/autochesssand`: 沙尘暴/土石结构) is the one the
+ * local-client dump ships — and its files are named differently from the default's (`TX_AutochessSand_A/N/M` vs
+ * `TX_autochessi_D/N_rgb/M_rough`). Reading the names out of `materials.json` is what lets a theme work without a second
+ * hardcoded table. The slots are the same in both dumps: `_MainTex` = albedo, `_BumpMap` = normal, `_MetallicGlossMap`
+ * = roughness/metallic, `_EmissionMap` = emission (沙地 has none).
+ *
+ * NOTE the dump is NOT a literal substitute for the default's names, which is why `fallback` exists: `map/autochess`
+ * lists `_BumpMap → TX_autochessi_N` and `_MetallicGlossMap → TX_autochessi_M`, while the renderer deliberately loads
+ * the packed `TX_autochessi_N_rgb` / `TX_autochessi_M_rough` instead. Trusting materials.json alone would have silently
+ * swapped the default board's normal and roughness maps (caught by comparing the two, 2026-10-08).
+ *
+ * @param {any} themeMats parsed `<group>/materials.json`
+ * @param {{ D?: string, N?: string, M?: string, E?: string }} [fallback] names to keep when the dump disagrees
+ * @returns {{ D: string, N?: string, M?: string, E?: string }|null} manifest entry names (not URLs), or null
+ */
+export function worldSlots(themeMats, fallback = null) {
+  if (!isObj(themeMats)) return null;
+  // the world prefab is the first entry (the dump orders the ground material before its grass/sand/water sub-materials)
+  const first = Object.values(themeMats)[0];
+  const tex = first && isObj(first.textures) ? first.textures : null;
+  if (!tex) return null;
+  const out = {};
+  for (const [slot, key] of [['_MainTex', 'D'], ['_BumpMap', 'N'], ['_MetallicGlossMap', 'M'], ['_EmissionMap', 'E']]) {
+    const t = tex[slot];
+    const n = t && typeof t.texture === 'string' ? t.texture : '';
+    const name = (fallback && fallback[key]) || n;
+    if (name) out[key] = name;
+  }
+  return out.D ? out : null;
+}
+
+/**
+ * Every image slot of a board pack: the theme's world textures plus the scene-wide ones that live outside its group
+ * (wind device, gate fx, water, background plane).
+ *
+ * The world group's own fixed names are the FALLBACK when the group's `materials.json` is missing or silent about a
+ * slot, so a theme without a dump degrades to the default art instead of losing the board.
+ * @param {any} themeMats
+ * @param {string} [group]
+ * @returns {Record<string, [string, string]>}
+ */
+export function groupImages(themeMats, group = DEFAULT_BOARD_GROUP) {
+  const fixed = { D: PACK_IMAGES.D[1], N: PACK_IMAGES.N[1], M: PACK_IMAGES.R[1], E: PACK_IMAGES.E[1] };
+  // the fixed names are the DEFAULT BOARD's own files — a different theme must use its own dump's names instead
+  const slots = worldSlots(themeMats, group === DEFAULT_BOARD_GROUP ? fixed : null) || fixed;
+  const out = {};
+  for (const [k, n] of Object.entries(slots)) out[k] = [group, n];
+  for (const [k, v] of Object.entries(PACK_IMAGES)) if (!(k in out)) out[k] = v;
+  return out;
+}
+
 let cached = null;
 
 /**
@@ -106,17 +191,21 @@ async function fetchJson(url) {
  * Load the board pack through the asset store of public/js/assets.js (needs local(), localUrl(), image()).
  * @returns {Promise<object|null>}
  */
-export function loadBoardPack(assets) {
+export function loadBoardPack(assets, themeGroup = DEFAULT_BOARD_GROUP) {
   if (cached) return cached;
+  const group = typeof themeGroup === 'string' && themeGroup ? themeGroup : DEFAULT_BOARD_GROUP;
   const pending = (async () => {
     if (!assets || typeof assets.local !== 'function' || typeof assets.localUrl !== 'function' || typeof assets.image !== 'function') return null;
     const manifest = await assets.local().catch(() => null);
     if (!isObj(manifest)) return null;
     const url = (g, n) => { const u = assets.localUrl(g, n); return typeof u === 'string' && u ? encodeURI(u) : null; };
-    const dUrl = url(...PACK_IMAGES.D);
+    // the theme's materials FIRST: they name this world's own texture files and give the fx materials at the end
+    const themeMats = await (async () => { const u = url(group, 'materials'); return u ? fetchJson(u) : null; })();
+    const images$ = groupImages(themeMats, group);
+    const dUrl = url(...(images$.D || PACK_IMAGES.D));
     if (!dUrl) return null;
     const images = {};
-    await Promise.all(Object.entries(PACK_IMAGES).map(async ([k, [g, n]]) => {
+    await Promise.all(Object.entries(images$).map(async ([k, [g, n]]) => {
       const u = url(g, n);
       if (!u) return;
       const img = await assets.image(u, { retry: true }).catch(() => null);
@@ -124,9 +213,20 @@ export function loadBoardPack(assets) {
     }));
     if (!images.D) return null;
     const dir = dUrl.replace(/\/[^/]*$/, '');
-    const [tiles, theme, fxMats, fxPrefab] = await Promise.all([
-      fetchJson(`${dir}/tiles.json`),
-      (async () => { const u = url('map/autochess', 'materials'); return u ? fetchJson(u) : null; })(),
+    // `tiles.json` is the DEFAULT board atlas's surface/UV table (tools/crop-board-atlas.mjs), not a world texture: a
+    // recolour like 沙地 ships no such file, so it must come from the default world instead of being fetched next to the
+    // theme's albedo (which 404s and runs the page's error handlers for a file that simply lives elsewhere). The local
+    // manifest does not index it, so its directory is derived from the default group's own albedo.
+    const tilesUrl = (() => {
+      const own = url(group, 'tiles');
+      if (own) return own;
+      const def = url(DEFAULT_BOARD_GROUP, 'tiles');
+      if (def) return def;
+      const defD = url(...PACK_IMAGES.D);
+      return defD ? `${defD.replace(/\/[^/]*$/, '')}/tiles.json` : `${dir}/tiles.json`;
+    })();
+    const [tiles, fxMats, fxPrefab] = await Promise.all([
+      fetchJson(tilesUrl),
       (async () => { const u = url('map/fx', 'materials'); return u ? fetchJson(u) : null; })(),
       (async () => { const u = url('map/fx', 'prefab'); return u ? fetchJson(u) : null; })(),
     ]);
@@ -148,8 +248,9 @@ export function loadBoardPack(assets) {
     }));
     return {
       key: `${dUrl}#${tiles?.version || 0}`,
+      group,
       images, meshes, tiles: isObj(tiles) ? tiles : null, uv: resolveUvTable(isObj(tiles) ? tiles : null),
-      materials: { theme: isObj(theme) ? theme : null, fx: isObj(fxMats) ? fxMats : null },
+      materials: { theme: isObj(themeMats) ? themeMats : null, fx: isObj(fxMats) ? fxMats : null },
     };
   })().catch((err) => { console.warn('[board3d] art load failed', err); return null; }).then((pack) => {
     // A timeout / failed atlas is not proof the host lacks 3D art. A later mount or visibility change may retry.

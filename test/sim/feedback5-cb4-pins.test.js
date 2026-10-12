@@ -127,7 +127,7 @@ function leaderField(bossId, { solo = true, stageId = 'act1autochess_m01', round
 
 test('item 29: 铳 patrols (3,9) → (2,3) → (5,9) on every boss field over walkable tiles (the pair\'s copy the mirrored points); 卢西恩 loops without reaching the goal', () => {
   const stages = Object.keys(DATA.stages).filter((id) => DATA.stages[id].active !== false && DATA.stages[id].weight > 0);
-  assert.equal(stages.length, 8);
+  assert.equal(stages.length, 9);
   for (const stageId of stages) {
     for (const solo of [true, false]) {
       const h = leaderField('boss_2', { solo, stageId });
@@ -246,4 +246,3 @@ test('item 52: each leader attacks at its data interval while it has a target (1
     assert.ok(boss.stats.attacks >= max - 1, `${bossId} ${L.enemyKey}: ${boss.stats.attacks} attacks, ${max} at its ${boss.s.interval} s interval`);
   }
 });
-

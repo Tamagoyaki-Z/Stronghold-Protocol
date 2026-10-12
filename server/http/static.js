@@ -21,10 +21,12 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { MEDIA_PREFIX } from '../../shared/media.js';
 import { ROOT, noopLog } from './config.js';
 import { sendError, sendJson } from './common.js';
-import { MIME, GzipCache, isNotModified, serveFile } from './files.js';
+import { MIME, GzipCache, serveBuffer, serveFile } from './files.js';
+import { RuntimeCache } from './runtimeCache.js';
 import { serveMedia } from './media.js';
 import { createPackRegistry } from '../packs.js';
 import { PACKS_URL, PACK_INDEX_FILE } from '../../shared/packs.js';
@@ -51,11 +53,11 @@ const EMPTY_LOCAL_ART = Buffer.from(JSON.stringify({ version: 1, source: 'none',
 /**
  * Create the static request handler.
  * @param {{ publicDir: string, dataDir: string, sharedDir: string, simDir?: string, packsDir?: string,
- *   packs?: ReturnType<typeof createPackRegistry>, log?: object }} dirs
+ *   packs?: ReturnType<typeof createPackRegistry>, runtimeCache?: boolean, log?: object }} dirs
  *   packs: the server's pack registry (default: one over publicDir, dataDir and packsDir — ROOT/packs)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, rawPath: string, query: string) => Promise<void>}
  */
-export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = path.join(ROOT, 'server', 'sim'), packsDir = path.join(ROOT, 'packs'), packs = null, log = noopLog }) {
+export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = path.join(ROOT, 'server', 'sim'), packsDir = path.join(ROOT, 'packs'), packs = null, runtimeCache, log = noopLog }) {
   const registry = packs || createPackRegistry({ publicDir, dataDir, packsDir }, { log: /** @type {any} */ (log) });
   const mounts = [
     { prefix: '/data/', name: 'data', dir: path.resolve(dataDir) },
@@ -65,8 +67,11 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
     { prefix: '/', name: 'public', dir: path.resolve(publicDir) },
   ];
   const shimBody = Buffer.from(DATA_SHIM_JS);
-  const shimTag = `"shim-${shimBody.length.toString(16)}"`;
+  const shimTag = `shim-${createHash('sha256').update(shimBody).digest('hex')}`;
   const gzipCache = new GzipCache();
+  const runtime = new RuntimeCache({ publicDir, dataDir, sharedDir, simDir, shimBody, enabled: runtimeCache });
+  const immutable = 'public, max-age=31536000, immutable';
+  const stale = (req, res) => sendError(req, res, 409, '页面资源版本已变化，请刷新页面 · Runtime version changed, reload');
 
   return async function serveStatic(req, res, rawPath, query) {
     let decoded;
@@ -76,10 +81,10 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
       return;
     }
     if (decoded === '/data.js') {
-      const headers = { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache', ETag: shimTag, 'Content-Length': shimBody.length };
-      if (isNotModified(req, shimTag, new Date(0))) { delete headers['Content-Length']; res.writeHead(304, headers); res.end(); return; }
-      res.writeHead(200, headers);
-      res.end(req.method === 'HEAD' ? undefined : shimBody);
+      const version = await runtime.version(decoded, query);
+      if (version === false) { stale(req, res); return; }
+      await serveBuffer(req, res, shimBody, { type: MIME['.js'], tag: version ? `rv-${version.hash}` : shimTag,
+        cacheControl: version ? immutable : 'no-cache', cache: gzipCache });
       return;
     }
     // Content packs (server/packs.js): the live index, and only the files a pack's manifest names
@@ -142,6 +147,7 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
       if (e && e.code === 'ENOENT' && mount.name === 'data' && segments.length === 1 && segments[0] === LOCAL_ART_MANIFEST) {
         // Optional local-client art (DESIGN §13): an install without it gets an empty manifest instead of a 404,
         // so browsers don't log an error on every page load. Clients treat empty groups as "no local art".
+        if (new URLSearchParams(query).has('rv')) { stale(req, res); return; }
         res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache', 'Content-Length': EMPTY_LOCAL_ART.length });
         res.end(req.method === 'HEAD' ? undefined : EMPTY_LOCAL_ART);
       } else if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR' || e.code === 'EISDIR' || e.code === 'ENAMETOOLONG')) {
@@ -153,6 +159,25 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
         sendError(req, res, 500, '服务器内部错误 · Internal error');
       }
       return;
+    }
+    const version = await runtime.version(decoded, query);
+    if (version === false) { stale(req, res); return; }
+    if (version) {
+      const body = await runtime.body(version, stat);
+      if (!body) { stale(req, res); return; }
+      await serveBuffer(req, res, body, { type: MIME[path.extname(absPath).toLowerCase()] || 'application/octet-stream',
+        tag: `rv-${version.hash}`, cacheControl: immutable, mtime: stat.mtime, cache: gzipCache });
+      return;
+    }
+    if (mount.name === 'public' && absPath === path.join(mount.dir, 'index.html')) {
+      let rendered;
+      try { rendered = await runtime.renderIndex(absPath); }
+      catch (error) { log.warn?.('[http] runtime cache unavailable, serving revalidated HTML', error.message); }
+      if (rendered) {
+        // Only a content ETag validates generated HTML: index.html's mtime alone cannot detect a data-only update.
+        await serveBuffer(req, res, rendered.body, { type: MIME['.html'], tag: rendered.tag, cache: gzipCache });
+        return;
+      }
     }
     await serveFile(req, res, absPath, stat, mount.name, segments, query, gzipCache, log);
   };

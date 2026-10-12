@@ -60,9 +60,10 @@ export const HUD_REM = Object.freeze({
  * board ('prep') or the Final Assault half ('bossPrep'); null for every other camera. The prep camera keeps the bench /
  * temp rows and the field's back row clear of them (render/projection.js clearHud; user playtest #5 item 9: the rem
  * floor of 40 px makes the HUD relatively taller on phones in landscape and the shop bar covered the bench).
- * The bottom band is the shop bar's — also for an eliminated player's own board (no shop bar: the band only costs size
+ * The bottom band is at least the shop bar's — also for an eliminated player's own board (no shop bar: the band only costs size
  * there, while a camera following the bar's presence would have to re-frame whenever it appears, e.g. when the private
- * state arrives after the prep camera was set) — unless `opts.shop === false`: the player folded the shop (收起) and the
+ * state arrives after the prep camera was set); a taller chat corner is also kept clear. With `opts.shop === false` the
+ * player folded the shop (收起) and the
  * own prep board moved to the official shop-collapsed camera (public issue #5: the board did not grow; screens/game.js
  * asks for it only while a folded bar is shown). Its band is the higher of the folded tab (bottom right) and the corner
  * buttons' hit areas (交流 / ⚙ / 📖 / ⛶, bottom left, measured by `cornerBand`: on a narrow phone two rows of 34 px buttons
@@ -90,14 +91,12 @@ export function hudBands(kind, size, opts) {
     // the HUD layer starts below the top safe-area inset and ends above the bottom one (css/devices.css .gm__hud)
     const hud = document.querySelector('.gm__hud')?.getBoundingClientRect();
     safeTop = Math.max(0, hud?.top || 0);
-    if (folded) {
-      if (hud && hud.bottom > 0) safeBottom = Math.max(0, h - hud.bottom);
-      corner = cornerBand(h);
-    }
+    if (folded && hud && hud.bottom > 0) safeBottom = Math.max(0, h - hud.bottom);
+    corner = cornerBand(h);
   } catch { /* ignore */ }
   const bottom = folded
     ? Math.max(safeBottom + rem * HUD_REM.shopTabTop + HUD_REM.shopTabBorderPx, corner || safeBottom + rem * HUD_REM.cornerTop)
-    : rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx;
+    : Math.max(rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx, corner);
   return {
     top: Math.min(h * 0.4, safeTop + rem * HUD_REM.bondStripBottom),
     bottom: Math.min(h * 0.4, bottom),
@@ -112,7 +111,7 @@ export function hudBands(kind, size, opts) {
  * @param {number} h
  */
 function cornerBand(h) {
-  const btns = document.querySelectorAll('.gm__corner .gm__gear, .gm__corner .ewheel__btn');
+  const btns = document.querySelectorAll('.gm__corner .gm__gear, .gm__corner .ewheel__btn, .gm__corner .mchat-toggle');
   if (!btns || !btns.length) return 0;
   const root = document.documentElement;
   const tap = root?.classList?.contains('sp-coarse') ? parseFloat(getComputedStyle(root).getPropertyValue('--tap-min')) || 0 : 0;
@@ -213,10 +212,10 @@ export function seedAssets(store) {
  * @param {{ signal?: AbortSignal }} [options] Cancels a pending mount without creating a fallback.
  * @returns {Promise<ReturnType<typeof guardView>>}
  */
-export async function mountFieldView(host, { signal } = {}) {
+export async function mountFieldView(host, { signal, stageId = null } = {}) {
   checkActive(signal);
   const pref = renderPref();
-  const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), padding: hudPadding, hud: hudBands };
+  const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), stageId, padding: hudPadding, hud: hudBands };
   if (pref !== 'fallback') {
     const controller = new AbortController();
     const onAbort = () => controller.abort(abortError(signal));
@@ -264,9 +263,14 @@ export async function mountFieldView(host, { signal } = {}) {
 
 /**
  * Preact hook: mount a field view into `hostRef` once; returns { view, kind } (view null while loading).
+ *
+ * `stageId` (the match's own stage, `m.public.stageId`) is read ONCE, when the view is created: the board's world
+ * textures are baked into the scene at creation, so the theme must be chosen then (render/board3d/theme.js). A stage
+ * that arrives later — or not at all — draws the default world, which is what every match did before themes existed.
  * @param {{ current: HTMLElement|null }} hostRef
+ * @param {string|null} [stageId]
  */
-export function useFieldView(hostRef) {
+export function useFieldView(hostRef, stageId = null) {
   const [state, setState] = useState({ view: null, kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const retries = useRef(0);
@@ -277,7 +281,7 @@ export function useFieldView(hostRef) {
     if (!host) return undefined;
     setState({ view: null, kind: 'loading' });
     const controller = new AbortController();
-    mountFieldView(host, { signal: controller.signal }).then((view) => {
+    mountFieldView(host, { signal: controller.signal, stageId }).then((view) => {
       if (dead) { view.destroy(); return; }
       viewRef.current = view;
       if (view.kind === 'engine') retries.current = 0;

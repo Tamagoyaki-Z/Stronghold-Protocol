@@ -31,7 +31,7 @@ export class PlayerPrep {
     const handFull = freeSlot(this.hand) < 0;
     if (slot.kind === 'item') {
       if (!this.gd.item(slot.id)) return fail(ERR.BAD_TARGET);
-      if (!this.m.itemPool.canGain(slot.id)) return fail(ERR.SOLD_OUT);
+      if (!this.m.itemPoolFor(this).canGain(slot.id)) return fail(ERR.SOLD_OUT);
       if (handFull) return fail(ERR.HAND_FULL);
     } else if (slot.kind === 'chess') {
       const rec = this.gd.chess(slot.id);

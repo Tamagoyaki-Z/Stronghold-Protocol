@@ -1,4 +1,5 @@
 // public/js/render/app/pixi.js — load PIXI and pixi-spine once (one module-level promise).
+import { runtimeURL } from '../../runtime.js';
 
 const VENDOR = { pixi: '/vendor/pixi.min.js', spine: '/vendor/pixi-spine.js' };
 
@@ -7,7 +8,7 @@ let pixiPromise = null;
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = src;
+    s.src = runtimeURL(src);
     s.async = false;
     s.onload = () => resolve();
     s.onerror = () => reject(new Error(`failed to load ${src}`));
