@@ -1444,5 +1444,8 @@
   "关闭 3D 棋盘与高开销特效，降低卡顿（画面会变朴素）。": "Turns the 3D board and the expensive effects off to reduce stutter (the look becomes plainer).",
   "乐观界面反馈": "Optimistic interface feedback",
   "点按后立即把按钮 / 卡牌标成「处理中」，服务器确认或拒绝后自动撤销；不改变任何游戏数值。": "Marks a button / card as “processing” the moment you tap it, and withdraws the mark when the server confirms or refuses. It never changes a game value.",
-  "当前延迟 {ms}ms（原始 {raw}ms）": "Current latency {ms}ms (raw {raw}ms)"
+  "当前延迟 {ms}ms（原始 {raw}ms）": "Current latency {ms}ms (raw {raw}ms)",
+  "组别": "Groups",
+  "本组内共享卡池": "This group shares one card pool",
+  "超过 5 人时按座位分成若干组，同组玩家抽同一套卡池": "With more than 5 players the seats are split into groups; everyone in a group draws from the same card pool."
 }

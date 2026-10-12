@@ -30,6 +30,7 @@ import { SettingsButton } from '../ui/settings.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating, serverNow } from '../store.js';
+import { poolGroupOf, poolGroupSizes, GROUPED_POOL_MIN_PLAYERS } from '../../../shared/playerCapacity.js';
 import { difficultyInfo } from './lobby.js';
 import { t, tc } from '../../../shared/i18n.js';
 
@@ -92,6 +93,8 @@ export function roomFacts(room, myId) {
       ? others.filter((s) => s.connected !== false && !s.left) : [],
     canStart: waiting && isHost && othersReady && !!mine && !aiLimitExceeded,
     othersReady,
+    // fixed draft groups of this occupancy (shared/playerCapacity.js; server/match/pool.js uses the same rule)
+    groups: poolGroups(room, seats),
     // spectator seats (never players: not in `humans`, never counted for ready / start)
     spectators: Array.isArray(room?.spectators) ? room.spectators.filter((s) => s && typeof s === 'object') : [],
     spectating,
@@ -105,6 +108,86 @@ export function roomFacts(room, myId) {
  * @param {any} room room.state payload
  * @returns {{ on: boolean, editable: boolean } | null}
  */
+/** A seat shows its group chip only when the occupancy actually splits into several groups (5 or fewer share one). */
+export function roomShowsGroups(room, facts) {
+  return room?.mode !== 'solo' && Array.isArray(facts?.groups) && facts.groups.length > 1;
+}
+
+/**
+ * The fixed draft group sizes of a room: the server's `room.state.groups` when it sent one, else computed from the
+ * occupied seat count with the shared rule (a state from an older server). A room of five or fewer has one shared
+ * pool: the server omits `groups` there and this returns [] — never a single "A 组" label for a whole room.
+ * @param {any} room room.state payload
+ * @param {(null | {seat:number})[]} [seats] an already normalized seat list
+ * @returns {number[]} one size per group, in occupied seat order
+ */
+export function poolGroups(room, seats) {
+  if (!room || room.mode === 'solo') return [];
+  if (Array.isArray(room.groups) && room.groups.every((n) => Number.isInteger(n) && n > 0)) return room.groups.slice();
+  const occupied = (seats || normalizeSeats(room)).filter(Boolean).length;
+  if (occupied < 1) return [];
+  try {
+    const sizes = poolGroupSizes(occupied);
+    return sizes.length > 1 ? sizes : [];
+  } catch { return []; }
+}
+
+/**
+ * 0-based fixed draft group of a seat index, or -1 without a group. `rank` is the seat's position among the occupied
+ * seats in seat order — the same order server/match/pool.js assigns groups in, so client and server always agree.
+ * @param {number} rank position in occupied seat order
+ * @param {number} occupied number of occupied seats
+ */
+export function seatGroup(rank, occupied) {
+  const group = poolGroupOf(rank, occupied);
+  return group >= 0 && occupied >= GROUPED_POOL_MIN_PLAYERS ? group : -1;
+}
+
+/**
+ * The group the SERVER gave this seat (`room.state.seats[i].group`, the wire contract), or the locally computed one
+ * for a state from an older server. -1 means "no group" (an empty seat, or one shared pool for the whole room).
+ * @param {any} seat the seat record
+ * @param {number} rank its position in occupied seat order
+ * @param {number} occupied occupied seats in the room
+ */
+export function seatGroupOf(seat, rank, occupied) {
+  if (!seat) return -1;
+  if (Number.isInteger(seat.group) && seat.group >= 0) return seat.group;
+  return seatGroup(rank, occupied);
+}
+
+/** 'A'…'Z' for a 0-based group number (a 20-seat room has at most five groups). */
+export function groupLetter(index) {
+  return index >= 0 && index < 26 ? String.fromCharCode(65 + index) : '';
+}
+
+/**
+ * The fixed draft group of a seat (「A 组」). The five group colours are fixed per group index (A green, B orange,
+ * C purple, D blue, E pink, then they cycle) and are carried ONLY here — the seat card's left edge, its badge — so
+ * they never collide with the per-seat avatar hue (SEAT_HUES, ui/components.js).
+ */
+export const GROUP_COLORS = ['#4ed8af', '#f6a329', '#a06bff', '#4ea8ff', '#ff6fae'];
+
+/** The colour of a 0-based group index (cycles past the fifth group). */
+export function groupColor(index) {
+  return GROUP_COLORS[index >= 0 ? index % GROUP_COLORS.length : 0];
+}
+
+function GroupChip({ group }) {
+  const letter = groupLetter(group);
+  if (!letter) return null;
+  const label = t('{group}组', { group: letter });
+  return html`<span class="seat__group" style=${`--group-color:${groupColor(group)}`}
+    title=${t('本组内共享卡池')} aria-label=${label}>${label}</span>`;
+}
+
+/** The card's own group colour: the --group-color the border, the badge and the totals row all read. */
+function cardStyle(index, group) {
+  const tint = group >= 0 ? `--group-color:${groupColor(group)};` : '';
+  return `${tint}--seat-i:${index}`;
+}
+const groupedClass = (group) => (group >= 0 ? ' is-grouped' : '');
+
 export function aiLastOption(room) {
   if (!room || room.mode === 'solo') return null;
   return { on: true, editable: false };
@@ -194,12 +277,13 @@ export function swapDeadline(ref, ask) {
   return ref.current.deadline;
 }
 
-export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
+export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
   const coop = room.mode !== 'solo';
+  const chip = group >= 0 ? html`<${GroupChip} group=${group} />` : null;
   if (!seat) {
     const canAdd = coop && facts.isHost;
-    return html`<article class="seat seat--empty" style=${`--seat-i:${index}`}>
-      <header class="seat__head"><span class="seat__no num">P${index + 1}</span><${MicroLabel}>SEAT ${String(index + 1).padStart(2, '0')}<//></header>
+    return html`<article class=${`seat seat--empty${groupedClass(group)}`} style=${cardStyle(index, group)}>
+      <header class="seat__head"><span class="seat__no num">P${index + 1}</span><${MicroLabel}>SEAT ${String(index + 1).padStart(2, '0')}<//>${chip}</header>
       <div class="seat__art seat__art--empty">
         <div class="seat__radar" aria-hidden="true"></div>
         <span class="seat__wait">${t('等待博士加入')}</span>
@@ -221,11 +305,12 @@ export function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRem
   const offline = seat.connected === false && !seat.isBot;
   // The host never needs to toggle ready: starting the match readies them (server rule).
   const state = offline ? 'offline' : seat.ready || seat.isBot ? 'ready' : isHostSeat ? 'host' : 'waiting';
-  return html`<article class=${`seat brackets${isMe ? ' is-me' : ''}${isHostSeat ? ' is-host' : ''}${seat.isBot ? ' is-bot' : ''} is-${state}`}
-      style=${`--seat-i:${index}`}>
+  return html`<article class=${`seat brackets${isMe ? ' is-me' : ''}${isHostSeat ? ' is-host' : ''}${seat.isBot ? ' is-bot' : ''} is-${state}${groupedClass(group)}`}
+      style=${cardStyle(index, group)}>
     <header class="seat__head">
       <span class="seat__no num">P${index + 1}</span>
       <${MicroLabel}>SEAT ${String(index + 1).padStart(2, '0')}<//>
+      ${chip}
       ${isHostSeat ? html`<span class="seat__host"><${Icon} name="crown" />${t('房主')}</span>` : null}
     </header>
     <div class="seat__art">
@@ -334,6 +419,10 @@ export function MatchmakingControl({ facts, busy, connected, onChange }) {
 function CapacityPicker({ room, facts, busy, connected, onPick, onMatchmaking }) {
   const capacity = room.capacity || facts.seats.length;
   const minCapacity = Math.max(1, ...facts.occupied.map((s) => s.seat + 1));
+  // 「A 组 4 人 · B 组 4 人」 — one chip per group, in the group's own colour (nothing while the room is one pool)
+  const perGroup = facts.groups.length > 1
+    ? facts.groups.map((size, g) => ({ g, size })).filter((x) => x.size > 0)
+    : [];
   return html`<div class="room-capacity" aria-label=${t('同盟席位')}>
     <span class="room-capacity__label">${t('人数上限')} <b class="num">${capacity}</b> ${t('人')}</span>
     ${facts.isHost ? html`<div class="room-capacity__options" role="radiogroup" aria-label=${t('调整同盟人数上限')}>
@@ -343,6 +432,11 @@ function CapacityPicker({ room, facts, busy, connected, onPick, onMatchmaking })
         onClick=${() => n !== capacity && onPick(n)}>${n}</button>`)}
     </div>` : html`<span class="t-dim">${t('由房主设置')}</span>`}
     <span class="room-capacity__count num">${facts.occupied.length} / ${capacity}</span>
+    ${perGroup.length ? html`<span class="room-groups" aria-label=${t('组别')}>
+      ${perGroup.map(({ g, size }) => html`<span key=${g} class="room-groups__item" style=${`--group-color:${groupColor(g)}`}>
+        <b>${t('{group}组', { group: groupLetter(g) })}</b><span class="num">${size}</span>${t('人')}
+      </span>`)}
+    </span>` : null}
     <${MatchmakingControl} facts=${facts} busy=${busy} connected=${connected} onChange=${onMatchmaking} />
     ${facts.maxAiPerRoom !== null ? html`<span class=${`room-ai-limit${facts.aiLimitReached ? ' is-full' : ''}`} role="status"
         title=${facts.aiLimitReached ? t('已达到服务器允许的 AI 队友上限') : t('服主设置的每房 AI 队友上限')}>
@@ -442,6 +536,14 @@ export function RoomScreen() {
   const info = difficultyInfo(room.mode, room.difficulty);
   const swapLeftS = swapEndsAt ? Math.max(0, Math.ceil((swapEndsAt - serverNow()) / 1000)) : 0;
 
+  const showsGroups = roomShowsGroups(room, facts);
+  // seat index → its position among the occupied seats (the order the fixed draft groups are cut in, server-side)
+  const seatRanks = new Map(facts.seats.map((s, i) => [i, s ? -1 : -2]));
+  let rank = 0;
+  facts.seats.forEach((s, i) => { if (s) seatRanks.set(i, rank++); });
+  // per seat, the group the server sent (room.state.seats[].group), else the shared rule for a seat-only frame
+  const groupOf = (seat, at) => (showsGroups ? seatGroupOf(seat, seatRanks.get(at) ?? -1, facts.occupied.length) : -1);
+
   const run = async (kind, fn) => {
     if (inFlight.current) return;
     if (!online) { toast(t('连接中断，请稍候重试'), 'warn'); return; }
@@ -527,7 +629,7 @@ export function RoomScreen() {
           <${Button} variant="danger" size="lg" square=${true} icon="exit" loading=${busy === 'leave'} onClick=${leave} aria-label=${t('离开同盟')} />
         <//>
         <div class="room-ping">
-          <${PingPill} ms=${conn.ping} online=${online} />
+          <${PingPill} ms=${conn.ping} raw=${conn.pingRaw} online=${online} />
           <${MicroLabel}>${t('当前延迟')}<//>
         </div>
         <${Button} variant="secondary" size="sm" icon="chart" class="stats-entry" onClick=${openStats} title=${t('统计数据')} aria-label=${t('统计数据')}>${t('统计')}<//>
@@ -546,7 +648,7 @@ export function RoomScreen() {
     ${coop ? html`<${CapacityPicker} room=${room} facts=${facts} busy=${busy} connected=${online} onPick=${setCapacity} onMatchmaking=${setMatchmaking} />` : null}
     <main class=${`seats${coop ? facts.seats.length > 10 ? ' seats--dense' : facts.seats.length > 4 ? ' seats--expanded' : '' : ' seats--solo'}${coop && facts.seats.length === 10 ? ' seats--ten' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
-        myId=${me.playerId} busy=${busy} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost}
+        myId=${me.playerId} busy=${busy} group=${groupOf(s, i)} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost}
         onSwap=${askSwap} />`)}
       ${coop ? null : html`<aside class="solo-brief brackets">
         <${MicroLabel} tone="mint">BRIEFING<//>
@@ -559,6 +661,10 @@ export function RoomScreen() {
         </ul>
       </aside>`}
     </main>
+    ${showsGroups ? html`<div class="seat-groups">
+      <span class="seat-groups__mine"><${Icon} name="users" />${t('本组内共享卡池')}</span>
+      <span class="seat-groups__rule">${t('超过 5 人时按座位分成若干组，同组玩家抽同一套卡池')}</span>
+    </div>` : null}
     <${SpectatorBar} facts=${facts} myId=${me.playerId} busy=${busy} onRemove=${removeSpectator} onSit=${sit} />
     <${SwapBar} facts=${facts} busy=${busy} onCancel=${cancelSwap} />
 

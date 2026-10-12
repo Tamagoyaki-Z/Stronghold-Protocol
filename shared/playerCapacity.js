@@ -35,6 +35,23 @@ export function poolGroupSizes(players) {
   return POOL_GROUP_LAYOUTS[players].slice();
 }
 
+/**
+ * The 0-based fixed pool group a seat belongs to, or -1 without a valid seat and occupied count. Groups follow
+ * the occupied SEAT order (the same order server/match/pool.js createPoolGroups uses), so the room's seat cards
+ * can label them before the match exists. `poolGroupSizes` throws on an unknown count: -1 instead.
+ */
+export function poolGroupOf(seat, occupied) {
+  if (!Number.isInteger(seat) || seat < 0) return -1;
+  let sizes;
+  try { sizes = poolGroupSizes(occupied); } catch { return -1; }
+  let offset = 0;
+  for (let g = 0; g < sizes.length; g++) {
+    offset += sizes[g];
+    if (seat < offset) return g;
+  }
+  return -1;
+}
+
 /** A three-player group keeps the complete original pool; only a five-player group expands. */
 export const poolCopyScale = (groupSize) => Math.max(1, groupSize / BASE_SEATS);
 

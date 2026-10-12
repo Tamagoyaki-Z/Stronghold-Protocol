@@ -67,6 +67,26 @@
 button.room-matchmaking:hover:not(:disabled) { border-color: var(--text-hi); color: var(--text-hi); }
 button.room-matchmaking:disabled { opacity: .45; cursor: default; }
 
+/* 「A 组 4 人 · B 组 4 人」 in the room's info bar — one chip per group, in that group's colour. Nothing while the
+   room is a single shared pool (five players or fewer). */
+.room-groups { display: flex; align-items: center; gap: .1rem; flex-basis: 100%; justify-content: center; }
+/* The group totals always take their own line under 人数上限 (the bar wraps; :has() is unavailable here). */
+.room-capacity { row-gap: .04rem; }
+.room-groups__item {
+  display: flex;
+  align-items: center;
+  gap: .03rem;
+  padding: .01rem .08rem;
+  background: transparent;
+  background: color-mix(in srgb, var(--group-color, var(--mint-500)) 16%, transparent);
+  border: 1px solid var(--group-color, var(--mint-500));
+  color: var(--group-color, var(--mint-400));
+  font-size: calc(.15 * var(--t));
+  line-height: 1.2;
+}
+.room-groups__item b { font-weight: 700; }
+.room-groups__item .num { font-weight: 700; }
+
 .seats--expanded, .seats--dense { grid-template-rows: none; align-content: stretch; overflow: auto; scrollbar-width: thin; }
 .seats--expanded { grid-auto-rows: minmax(2.7rem, 1fr); gap: .14rem; padding: .12rem .45rem; }
 .seats--ten { grid-template-columns: repeat(5, minmax(0, 3.08rem)); }
@@ -96,6 +116,24 @@ button.room-matchmaking:disabled { opacity: .45; cursor: default; }
 .seats--dense .seat__foot .btn--sm { min-height: .25rem; height: .25rem; padding: 0 .08rem; font-size: calc(.12 * var(--t)); }
 .seats--dense .seat--empty .seat__art { grid-column: 1 / -1; }
 .seats--dense .seat__wait { font-size: calc(.14 * var(--t)); }
+/* The dense (11+) cards are short: the group chip shrinks to fit the same header. */
+.seats--dense .seat__group { padding: 0 .04rem; font-size: .11rem; letter-spacing: 0; }
+
+/* ---- fixed draft groups (more than five players) ---------------------------------------------------------- */
+.seat-groups {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .24rem;
+  min-height: .38rem;
+  padding: 0 .3rem;
+  color: var(--text-lo);
+  font-size: calc(.15 * var(--t));
+}
+.seat-groups__mine { display: flex; align-items: center; gap: .06rem; color: var(--mint-400); }
+.seat-groups__mine .icon { width: .17rem; height: .17rem; }
+.seat-groups__rule { color: var(--text-dim); }
 
 .seat {
   --bk-c: var(--line-3);
@@ -130,6 +168,37 @@ button.room-matchmaking:disabled { opacity: .45; cursor: default; }
 }
 .seat__head { align-self: stretch; display: flex; align-items: center; gap: .1rem; }
 .seat__no { font-size: calc(.22 * var(--t)); font-weight: 700; color: var(--text-md); padding-left: .08rem; border-left: 3px solid var(--line-3); line-height: 1.1; }
+/* 分组 (owner's decision 2026-10-10): the fixed draft group of this seat. Shown once a room splits into several
+   groups (more than five players); a room of five or fewer shares one pool and shows no chip. The group colour is
+   the --group-color the seat card carries (A green, B orange, C purple, D blue, E pink; room.js GROUP_COLORS). */
+.seat__group {
+  display: flex;
+  align-items: center;
+  gap: .03rem;
+  margin-left: .04rem;
+  padding: .02rem .08rem;
+  background: transparent;
+  background: color-mix(in srgb, var(--group-color, var(--mint-500)) 18%, transparent);
+  border: 1px solid var(--group-color, var(--mint-500));
+  color: var(--group-color, var(--mint-400));
+  font-size: calc(.14 * var(--t));
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+/* The card's own group colour: a 3px left edge (the seat::before light bar keeps the ready/offline colour and the
+   avatar keeps its SEAT_HUES tint — the group colour never touches either). */
+.seat.is-grouped::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--group-color, var(--mint-500));
+  pointer-events: none;
+}
 .seat__host {
   margin-left: auto;
   display: flex;

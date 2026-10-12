@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Button } from '../../public/js/ui/components.js';
-import { roomFacts, SeatCard, MatchmakingControl } from '../../public/js/screens/room.js';
+import {
+  roomFacts, SeatCard, MatchmakingControl, roomShowsGroups, poolGroups, seatGroup, seatGroupOf, groupLetter, groupColor,
+  GROUP_COLORS,
+} from '../../public/js/screens/room.js';
 
 function* walk(node) {
   if (Array.isArray(node)) { for (const child of node) yield* walk(child); return; }
@@ -131,4 +134,77 @@ test('empty seats explain server AI limit and block repeated or conflicting addi
   const unrestricted = room();
   const busyButton = [...walk(SeatCard({ ...props, room: unrestricted, facts: roomFacts(unrestricted, 'host'), busy: 'transfer1' }))].find((n) => n.type === Button);
   assert.equal(busyButton.props.disabled, true);
+});
+
+// ---- ③b 卡池分组显示 (owner's decision 2026-10-10) ----------------------------------------------------------------
+
+test('the seat groups follow the server frame, and the shared rule only for a seat-only one', () => {
+  // the server sends `groups` once the room actually splits (>5); the client then never recomputes it
+  const six = { seat: 0, playerId: 'p0', name: 'P0', isBot: false, ready: false, connected: true };
+  const source = room({ capacity: 8, groups: [3, 3], seats: [0, 1, 2, 3, 4, 5].map((i) => ({ ...six, seat: i, playerId: `p${i}` })) });
+  assert.deepEqual(roomFacts(source, 'p0').groups, [3, 3]);
+  assert.equal(roomShowsGroups(source, roomFacts(source, 'p0')), true);
+  // a seat-only frame (an older server) falls back to the shared layout, in occupied seat order
+  const bare = { ...source };
+  delete bare.groups;
+  assert.deepEqual(roomFacts(bare, 'p0').groups, [3, 3]);
+  // five or fewer share ONE pool: the server omits `groups` and no chip is drawn
+  const five = { ...source, seats: source.seats.slice(0, 5) };
+  delete five.groups;
+  assert.deepEqual(roomFacts(five, 'p0').groups, []);
+  assert.equal(roomShowsGroups(five, roomFacts(five, 'p0')), false, 'never a single 「A 组」 label for a whole room');
+  // solo rooms have no groups at all
+  const solo = room({ mode: 'solo', capacity: 1, seats: [host] });
+  assert.deepEqual(poolGroups(solo), []);
+  assert.equal(roomShowsGroups(solo, roomFacts(solo, 'host')), false);
+  // an impossible player count must not throw out of a render
+  assert.deepEqual(poolGroups({ mode: 'coop', capacity: 20, seats: [{ ...six, seat: 0 }], groups: 'x' }), []);
+});
+
+test('seatGroup / seatGroupOf / groupLetter / groupColor: the chip is the server s group, else the seat rank', () => {
+  assert.equal(seatGroup(0, 6), 0);
+  assert.equal(seatGroup(2, 6), 0, 'the 3/3 layout: the first three seats are A');
+  assert.equal(seatGroup(3, 6), 1);
+  assert.equal(seatGroup(5, 6), 1);
+  assert.equal(seatGroup(0, 5), -1, 'one shared pool below six players');
+  assert.equal(seatGroup(-1, 6), -1);
+  assert.equal(seatGroup(0, 99), -1, 'the shared rule refuses an unknown count instead of throwing');
+  // the wire contract wins over the local computation
+  assert.equal(seatGroupOf({ group: 1 }, 0, 6), 1);
+  assert.equal(seatGroupOf({ group: -1 }, 3, 6), 1, '-1 (the server s "no group") falls back to the rank');
+  assert.equal(seatGroupOf(null, 0, 6), -1);
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(groupLetter), ['A', 'B', 'C', 'D', 'E', 'F']);
+  assert.equal(groupLetter(-1), '');
+  assert.equal(groupLetter(26), '');
+  assert.equal(groupColor(0), GROUP_COLORS[0]);
+  assert.equal(groupColor(-1), GROUP_COLORS[0]);
+  assert.equal(groupColor(5), GROUP_COLORS[0], 'the colours cycle past the fifth group');
+});
+
+test('SeatCard paints the group badge, the tint and the 3px edge — and nothing when there is no group', () => {
+  const source = room({ capacity: 8, groups: [3, 3], seats: [0, 1, 2, 3, 4, 5].map((i) => ({ ...host, seat: i, playerId: `p${i}` })) });
+  const facts = roomFacts(source, 'p0');
+  const props = { room: source, facts, myId: 'p0', busy: null, onAddBot() {}, onRemoveBot() {}, onKick() {}, onTransferHost() {}, onSwap() {} };
+  const card = (seat, index, group) => SeatCard({ seat, index, group, ...props });
+  // the badge is a <GroupChip> vnode here (these tests do not render), so the prop it is handed IS the group
+  const badge = (v) => [...walk(v)].filter((n) => typeof n.type === 'function' && n.type.name === 'GroupChip');
+
+  const first = card(source.seats[0], 0, 0);
+  assert.equal(badge(first).length, 1, 'the A-组 badge');
+  assert.equal(badge(first)[0].props.group, 0);
+  assert.match(first.props.class, / is-grouped/, 'the 3px left edge class');
+  assert.match(first.props.style, /--group-color:#4ed8af/, "the group's own colour rides the card");
+  // the second group is a different colour, and the third seat still belongs to A
+  assert.equal(badge(card(source.seats[3], 3, 1))[0].props.group, 1);
+  assert.match(card(source.seats[3], 3, 1).props.style, /--group-color:#f6a329/);
+  assert.equal(badge(card(source.seats[2], 2, 0))[0].props.group, 0);
+  // an empty seat carries the group too (it belongs to one of the fixed groups)
+  const empty = card(null, 6, 1);
+  assert.match(empty.props.class, /seat--empty is-grouped/);
+  assert.equal(badge(empty)[0].props.group, 1);
+  // no group (five or fewer) ⇒ no badge, no tint, no edge class
+  const plain = card(source.seats[0], 0, -1);
+  assert.equal(badge(plain).length, 0);
+  assert.equal(/ is-grouped/.test(plain.props.class), false);
+  assert.equal(/--group-color/.test(plain.props.style), false);
 });
