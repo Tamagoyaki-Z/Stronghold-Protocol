@@ -25,7 +25,11 @@ test('a duplicate draft card becomes unavailable when the preceding player exhau
 });
 test('measured operator capacities and exceptions: co-op doubles shared stock, never private DIY stock', () => {
   const solo = new GameData(DATA, 'mode_single_normal'), coop = new GameData(DATA, 'mode_multi_normal');
-  for (const [name, n] of [['普罗旺斯', 10], ['跃跃', 10], ['风丸', 8], ['蒂比', 12], ['哈洛德', 14], ['缪尔赛思', 5]]) {
+  for (const [name, n] of [['普罗旺斯', 10], ['跃跃', 10], ['风丸', 8], ['蒂比', 12], ['哈洛德', 14],
+    // 缪尔赛思 (chess_char_6_11_a) is the economy's ONE poolCopiesOverrides entry: 4 copies instead of
+    // its tier's 5 (data/config.json; the migrate branch carries the same override). It used to read 5
+    // here because the v0.2.4 port had dropped the override.
+    ['缪尔赛思', 4]]) {
     assert.equal(solo.poolCopies(byName(name)), n, name); assert.equal(coop.poolCopies(byName(name)), 2 * n, name);
   }
   assert.equal(coop.poolCopies('chess_char_6_diy1_a'), solo.poolCopies('chess_char_6_diy1_a'));
