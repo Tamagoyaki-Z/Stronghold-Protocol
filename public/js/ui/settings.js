@@ -47,6 +47,12 @@ export function applyTextSize(v) {
 settingsStore.subscribe((s) => {
   savePref('settings', sanitizeSettings(s));
   audio.setVolumes(s);
+  // 中日语音: the language takes effect on the next line. The v0.2.4 line's settings.js pre-calls the ONE-argument
+  // form here ("stops the one on air and drops any line still decoding"), but public/js/audio.js is byte-identical in
+  // both lines and `setVoiceLang(lang, overrides = this.voiceOverrides)` has no stop side effect at all — a line on
+  // air is only ever ended by `_stopVoice` (a takeover, or `setFieldUnits` releasing the gate), and a line still
+  // decoding is dropped only when `voiceToken` moves on. So the pre-call is inert and is deliberately not carried
+  // over; adding it back would change nothing. (See _r024d-HANDOFF4.md item 4.)
   audio.setVoiceLang(s.voiceLang, s.voiceOverrides);
   applyTextSize(s.textSize);
 });
