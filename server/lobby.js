@@ -810,8 +810,10 @@ export class Lobby {
   // follow the occupied seat order (shared/playerCapacity.js) and therefore change with the swap.
   //
   // 准备后不再换位 (user rule, 2026-10-12): a seat that already readied for its draft group is never moved — the asker
-  // and the target must BOTH be unready when the ask is made AND when it is answered. Every other regroup in this
-  // lobby (setDifficulty) un-readies the others for exactly that reason, and the swap does the same.
+  // and the target must BOTH be unready when the ask is made AND when it is answered. Unlike setDifficulty, which
+  // regroups the WHOLE room and therefore un-readies the others, a swap moves two seat RECORDS between two indices:
+  // everybody else keeps the seat index — and so the draft group — they readied for, so no third doctor's 准备 is
+  // touched (只清当事人的准备状态, user rule the same day: and the two parties are unready by definition).
   // ---------------------------------------------------------------------------------------------------
 
   /** The negotiation a player takes part in — as its author (`from`) or its target (`to`) — or null. */
@@ -957,8 +959,14 @@ export class Lobby {
 
   /**
    * Exchange two seat records (room.moveSeat's semantics, header): the records travel with their index and keep
-   * playerId / loadout / ownership / DIY picks. Both sides are unready here — the caller checked — and the OTHER
-   * humans are un-readied like in any other regroup (setDifficulty), because the groups they readied for just moved.
+   * playerId / loadout / ownership / DIY picks.
+   *
+   * Nobody's ready flag is touched — not the two parties', not a bystander's (user rule, 2026-10-12:
+   * 只清当事人的准备状态). Both parties are provably unready here (swappableSeat re-checked them), so clearing them
+   * would be a no-op; and a third doctor who readied for the draft group its OWN seat index belongs to keeps that
+   * seat index through somebody else's swap, so its readiness still describes the group it readied for. Un-readying
+   * everybody, the way setDifficulty does when it changes the grouping itself, would silently disarm a third
+   * player's 准备 for a regroup that never moved them.
    */
   exchangeSeats(room, a, b) {
     if (a.seat === b.seat) return;
@@ -968,7 +976,6 @@ export class Lobby {
     b.seat = from;
     room.seats[to] = a;
     room.seats[from] = b;
-    for (const s of room.seats) if (s && !s.isBot && s.playerId !== room.hostId) s.ready = false;
   }
 
   start(session) {

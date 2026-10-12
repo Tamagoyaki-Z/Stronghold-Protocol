@@ -183,6 +183,52 @@ test('room.swapAsk: any doctor — not only the host — asks, and the seats mov
   assert.deepEqual(hostDone.seats.filter(Boolean).map((x) => x.ready), [false, false, false]);
 });
 
+test('room.swapAnswer: consent moves the two parties only — a third doctor stays 准备', async () => {
+  // 只清当事人的准备状态 (user rule, 2026-10-12). The v0.2.3 shape of a seat move (room.moveSeat / setDifficulty)
+  // un-readied EVERY other human, because those regroup the whole room; a swap moves two seat records between two
+  // indices and leaves every other seat index — and the draft group it readied for — exactly where it was. This test
+  // is the regression guard for that: a bystander who readied must still be ready once the two seats have moved.
+  const host = await room('Host', 8);
+  const guest = await join(host.code, 'Guest');
+  const other = await join(host.code, 'Other');
+  const bystander = await join(host.code, 'Bystander');
+
+  // the third doctor readies for the group its own seat index belongs to
+  const readied = await step(bystander, { t: 'room.ready', ready: true }, [stateObs(host, 0, 4)]);
+  okReply(readied.reply, { t: 'room.ready' });
+
+  const before = lastState(host);
+  const h = seatIndexOf(before, host.id);
+  const g = seatIndexOf(before, guest.id);
+  const o = seatIndexOf(before, other.id);
+  const b = seatIndexOf(before, bystander.id);
+  assert.deepEqual([h, g, o, b], [0, 1, 2, 3], 'the four humans hold the first four seats');
+  assert.equal(before.seats[b].ready, true, 'the bystander is ready before the swap');
+  assert.equal(before.seats[g].ready, false);
+  assert.equal(before.seats[o].ready, false);
+
+  const swap = await step(guest, { t: 'room.swapAsk', to: other.id },
+    [stateObs(host, 1, 4), [other, 'room.swapAsked']]);
+  okReply(swap.reply, { t: 'room.swapAsk' });
+  assert.equal(lastState(host).seats[b].ready, true, 'asking changes nobody\'s readiness either');
+
+  const answer = { t: 'room.swapAnswer', from: guest.id, accept: true };
+  const swapped = { [g]: other.id, [o]: guest.id, [b]: bystander.id };
+  const done = await step(other, answer,
+    [stateObs(host, 0, 4, swapped), [guest, 'room.swapEnded'], [other, 'room.swapEnded']]);
+  okReply(done.reply, answer);
+  const [after, endedAsker, endedTarget] = done.frames;
+  assert.equal(endedAsker.reason, 'accepted');
+  assert.equal(endedTarget.reason, 'accepted');
+  assert.equal(after.seats[g].playerId, other.id, 'the two parties really exchanged seats');
+  assert.equal(after.seats[o].playerId, guest.id);
+  assert.equal(after.seats[b].playerId, bystander.id, 'the bystander kept its seat');
+  assert.equal(after.seats[b].ready, true, 'a third doctor who readied for its group is still ready');
+  assert.deepEqual(after.seats.filter(Boolean).map((x) => [x.playerId, x.ready]),
+    [[host.id, false], [other.id, false], [guest.id, false], [bystander.id, true]],
+    'only the two parties were involved: both were unready and stay unready, the bystander keeps its 准备');
+});
+
 test('room.swapAsk: a refusal leaves every seat where it was', async () => {
   const host = await room('Host', 8);
   const guest = await join(host.code, 'Guest');
