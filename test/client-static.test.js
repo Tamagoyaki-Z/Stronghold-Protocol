@@ -538,12 +538,93 @@ describe('net.js', () => {
     timers.advance(40);
     ws().recv({ t: 'pong', c: ping.c, s: ping.c + 20 + 5000 });
     assert.equal(net.ping, 40);
+    assert.equal(net.pingRaw, 40, 'the raw sample of that probe');
     assert.equal(net.clockOffset, 5000);
     assert.ok(clocks.at(-1).synced);
     assert.ok(Math.abs(net.serverNow() - (timers.now() + 5000)) <= 1);
     ws().recv({ t: 'pong', c: 'garbage', s: 1 });
     ws().recv({ t: 'pong', c: timers.now() + 99999, s: 1 }); // negative rtt ignored
     assert.equal(net.ping, 40);
+    assert.equal(net.pingRaw, 40, 'an ignored sample never becomes the raw value');
+  });
+
+  test('the displayed ping is the minimum of the last five samples; pingRaw keeps the last one', async () => {
+    const { net, ws, timers } = await onlineNet();
+    const sample = async (rtt) => {
+      net.probe();
+      const ping = ws().last('ping');
+      timers.advance(rtt);
+      ws().recv({ t: 'pong', c: ping.c, s: 1 });
+    };
+    await sample(120); // a jittered first sample: the display follows it (it is the only one)
+    assert.equal(net.ping, 120);
+    assert.equal(net.pingRaw, 120);
+    await sample(44);  // the real RTT: the minimum takes over, the raw value follows the sample
+    assert.equal(net.ping, 44, 'the minimum of [120, 44]');
+    assert.equal(net.pingRaw, 44);
+    await sample(280); // a GC pause: jitter can only push a sample UP
+    assert.equal(net.ping, 44, 'the minimum of [120, 44, 280] — the display is not fooled');
+    assert.equal(net.pingRaw, 280, 'the tooltip still shows the raw sample');
+    assert.equal(net.snapshot().pingRaw, 280, 'snapshot carries pingRaw (the ping pill reads it)');
+    for (const rtt of [45, 43, 46, 47]) await sample(rtt); // six samples now: the oldest fall out of the window
+    assert.equal(net._pingSamples.length, 5, 'the window holds the last five samples');
+    assert.equal(net.ping, Math.min(...net._pingSamples));
+    assert.equal(net.ping, 43, '120 and 280 have left the window');
+    assert.equal(net.pingRaw, 47);
+  });
+
+  test('lag compensation: the window median replaces the window maximum', async () => {
+    const { lagEstimate } = await mod('net.js');
+    assert.equal(lagEstimate([]), 0);
+    assert.equal(lagEstimate([{ drift: 250 }]), 250);
+    assert.equal(lagEstimate([{ drift: 250 }, { drift: 8 }]), 8, 'an even sample count takes the lower middle');
+    assert.equal(lagEstimate([{ drift: 250 }, { drift: 8 }, { drift: 6 }]), 8);
+    assert.equal(lagEstimate([{ drift: 5 }, { drift: 6 }, { drift: 250 }, { drift: 9 }, { drift: 7 }]), 7,
+      'one extreme tick cannot lift the estimate (the window maximum would report 250)');
+  });
+
+  test('lag compensation: never below the window\'s smallest raw rtt, never 0', async () => {
+    const { compensateRtt, LAG_FLOOR_MS } = await mod('net.js');
+    assert.equal(LAG_FLOOR_MS, 20);
+    // (a) over-subtraction (the reported bug: raw 200 ms shown as 0 ms): the window floor holds
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: 190 }), 190, 'clamped up to the smallest raw rtt of the window');
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: 200 }), 200);
+    assert.equal(compensateRtt(200, { lag: 250, minRaw: null }), LAG_FLOOR_MS, 'the absolute floor holds on an empty window');
+    assert.equal(compensateRtt(200, { lag: 200, minRaw: 200 }), 200, 'the reported "current 0 ms (raw 200 ms)" cannot come back');
+    assert.ok(compensateRtt(200, { lag: 9999, minRaw: 1 }) >= LAG_FLOOR_MS);
+    // (b) a normal estimate still compensates
+    assert.equal(compensateRtt(200, { lag: 30, minRaw: 40 }), 170);
+    // (c) nothing to compensate
+    assert.equal(compensateRtt(60, { lag: 0, minRaw: 60 }), 60);
+    assert.equal(compensateRtt(0, { lag: 0, minRaw: 0 }), 0);
+  });
+
+  test('the probe reports the typical drift, not the worst tick', async () => {
+    const { lagEstimate, LAG_PROBE_INTERVAL_MS } = await mod('net.js');
+    const timers = fakeTimers();
+    let late = 0; // how far behind its 100 ms schedule the probe callback runs this tick
+    const { net } = await onlineNet({ timers, now: timers.now, clock: () => timers.now() + late });
+    timers.advance(LAG_PROBE_INTERVAL_MS); // the anchor tick only records the baseline
+    for (let i = 1; i <= 9; i++) { late = i * 10; timers.advance(LAG_PROBE_INTERVAL_MS); }
+    assert.ok(net._lagSamples.length >= 8, `kept the window samples (${net._lagSamples.length})`);
+    assert.equal(net._loopLag, Math.round(lagEstimate(net._lagSamples)), 'the estimate is the window statistic');
+    const worst = Math.max(...net._lagSamples.map((s) => s.drift));
+    assert.ok(net._loopLag < worst, `the worst tick (${worst}) must not set the estimate (${net._loopLag})`);
+    assert.ok(net._loopLag > 0, 'a steadily late timer still reports lag');
+  });
+
+  test('a heavily delayed pong is never displayed as 0 ms', async () => {
+    const { net, ws, timers } = await onlineNet();
+    net._loopLag = 250; // the over-subtracting estimate a 10 s worst-case window produced
+    net.probe();
+    const ping = ws().last('ping');
+    timers.advance(200);
+    ws().recv({ t: 'pong', c: ping.c, s: 1 });
+    assert.equal(net.pingRaw, 200, 'the tooltip still shows the raw round trip');
+    assert.ok(net.ping > 0, `the display cannot collapse to 0 (got ${net.ping})`);
+    const minRaw = Math.min(...net._rawSamples.map((s) => s.rtt));
+    assert.ok(net.ping >= minRaw, `the display stays at or above the window's smallest raw rtt (${minRaw})`);
+    assert.ok(net.ping >= 20, `and above the absolute floor (got ${net.ping})`);
   });
 
   test('silent socket is detected and replaced', async () => {

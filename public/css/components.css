@@ -86,6 +86,21 @@
 @keyframes btn-busy { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 乐观界面反馈 (ui/gameActions.js pending → screens/game.js): the thin bar a *held* element shows while its intent is
+   unanswered (`.apend` is dropped into the button / card; the host must be positioned — every one of them already is,
+   or becomes `position: relative` through its own [aria-busy="true"] rule). The same 2px mint bar as Button's loading
+   state (btn-busy) and ui/choiceOverlay.js's .spcard__busy, but shown at once: the in-match round trip is 0.2–0.5 s
+   here, so a 250 ms delay (the convention for a short request) would hide the acknowledgement entirely. */
+.apend {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px; overflow: hidden; pointer-events: none;
+}
+.apend::after {
+  content: ''; position: absolute; left: 0; bottom: 0; width: 40%; height: 2px;
+  background: var(--mint-400); animation: btn-busy 1.1s var(--ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) { .apend::after { animation: none; width: 100%; opacity: .5; } }
+.sp-reduced-motion .apend::after { animation: none; width: 100%; opacity: .5; }
+
 /* filled variants carry a hatch strip on the right end (in-game "准备就绪" look) */
 .btn--primary, .btn--amber, .btn--ice, .btn--danger {
   background-image:
@@ -441,6 +456,10 @@
   display: grid;
   place-items: center;
   padding: .3rem;
+  /* last-resort safety net: if a dialog is ever taller than the padded area (a very short landscape phone, a
+     translated footer that wraps), the backdrop itself scrolls, so the footer — and its 关闭 — stays reachable.
+     Nothing changes while the box fits, which is every normal case. */
+  overflow: auto;
   background: rgba(3, 5, 4, .72);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);

@@ -86,7 +86,7 @@ import { CombatHud } from '../ui/combatHud.js';
 import { SettingsModal, settingsStore } from '../ui/settings.js';
 import { ExitModal, AwayOverlay, awayStore } from '../ui/matchChrome.js';
 import { openGuide } from '../ui/guide.js';
-import { actions } from '../ui/gameActions.js';
+import { actions, onPendingChange, pendingKey, pendingKeys } from '../ui/gameActions.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
 import { Underframe, underframeRect, TempRowNotice } from '../ui/underframe.js';
 import { StandInTags } from './game/standInTags.js';
@@ -121,6 +121,9 @@ import { keepEarly, audioEarly } from './game/early.js';
 import { MatchEnded, PausedOverlay } from './game/overlays.js';
 import { inspectRange } from './game/range.js';
 import { t, tParts } from '../../../shared/i18n.js';
+
+/** The `pending` snapshot when 乐观界面反馈 is off (or nothing is in flight): every lookup answers false. */
+const EMPTY_PENDING = Object.freeze({ keys: new Set(), has: () => false });
 
 /** Router for the in-match screens. */
 export function GameScreen() {
@@ -214,6 +217,19 @@ function MatchScreen() {
   const [replace, setReplace] = useState(null);          // equip-replace dialog: { request, resolve }
   const [pauseBusy, setPauseBusy] = useState(false);
   const [armedCard, setArmedCard] = useState(null);     // the shop bar's armed card { kind, id } (merge tile cue)
+  // ---- optimistic interface feedback (plan A, ui/gameActions.js) ---------------------------------------------------
+  // `pending` is a snapshot of the intents the server has not answered yet. It only ever drives a *visual* held
+  // state (dimmed / disabled / sweep bar): no authoritative value is derived from it, and the frame still owns
+  // every number on screen. `optimisticFeedback` (设置, default ON) turns the markers off — off, `pending` is empty
+  // and every component renders exactly what it rendered before this feature existed.
+  const optimistic = useStore((s) => s.optimisticFeedback !== false, Object.is, settingsStore);
+  const [pendTick, setPendTick] = useState(0);
+  useEffect(() => onPendingChange(() => setPendTick((n) => n + 1)), []);
+  const pending = useMemo(() => {
+    if (!optimistic) return EMPTY_PENDING;
+    const keys = pendingKeys();
+    return { keys, has: (t, fields) => keys.has(pendingKey(t, fields)) };
+  }, [pendTick, optimistic]);
   const cc = isClientCombat(pub);
   const battleState = useStore((s) => s.match.battle, shallowEqual); // local battle runner (client-side combat)
 
@@ -1446,7 +1462,7 @@ function MatchScreen() {
     <div class="gm__hud" ref=${hudElRef}>
       <${TopBar} pub=${clockPub} priv=${priv} conn=${conn} hud=${hud} total=${total} drawer=${drawer}
         onExit=${() => setExitOpen(true)} onDrawer=${(t) => setDrawer((d) => (d ? null : t))} onReady=${toggleReady}
-        readyBusy=${readyBusy} readyCount=${readyCount} playerCount=${solo ? 1 : aliveCount}
+        readyBusy=${readyBusy} readyPending=${readyBusy && optimistic} readyCount=${readyCount} playerCount=${solo ? 1 : aliveCount}
         pen=${pen} penAvail=${penAvail} onPen=${togglePen} config=${gd.config} frozenAt=${frozenAt}
         pause=${canPause || paused ? { show: canPause, paused, busy: pauseBusy, onToggle: () => togglePause(!paused) } : null}
         live=${liveLpNow} spectator=${spectator}
@@ -1489,7 +1505,7 @@ function MatchScreen() {
         onDetailClose=${() => setDetail((d) => (d?.kind === 'chess' || d?.kind === 'item' ? null : d))}
         onRefuse=${(reason) => { toast(reason, 'warn'); audio.sfx('error', { volume: 0.5 }); }}
         reward=${phase === PHASE.PREP && !rewardMin ? priv?.shop?.rewardOffer || null : null}
-        onReward=${(i) => actions.reward(i)} onRewardLater=${() => setRewardMin(true)} onArm=${setArmedCard} />` : null}
+        onReward=${(i) => actions.reward(i)} onRewardLater=${() => setRewardMin(true)} onArm=${setArmedCard} pending=${pending} />` : null}
 
       ${phase === PHASE.PREP && priv?.shop?.rewardOffer ? html`<${RewardOverlay} priv=${priv} minimized=${rewardMin || collapsed}
         onMinimize=${(m) => { setRewardMin(m); if (!m) setCollapsed(false); }} />` : null}

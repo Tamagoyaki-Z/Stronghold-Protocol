@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html, Button, Modal, confirmDialog } from './components.js';
 import { assetCache } from '../assetCache.js';
+import { assets } from '../assets.js';
 import { store, selectRoute } from '../store.js';
 import { t } from '../../../shared/i18n.js';
 
@@ -212,9 +213,16 @@ export function AssetCacheHost() {
   <//>`;
 }
 
-/** Register without delaying login; stop optional filling as soon as the app enters a match. */
+/** Register without delaying login; stop optional filling as soon as the app enters a match, and tighten the *on-demand*
+ * downloads too (assets.js setDownloadMode: the portraits / Spine pages a match asks for) so a player on a home
+ * connection does not starve their own WebSocket. Both follow the same route value; leaving the match restores the
+ * defaults exactly. */
 export function installAssetCache() {
-  const follow = () => assetCache.setPlaying(selectRoute(store.get()) === 'game');
+  const follow = () => {
+    const inMatch = selectRoute(store.get()) === 'game';
+    assetCache.setPlaying(inMatch);
+    assets.setDownloadMode?.(inMatch);
+  };
   follow(); store.subscribe(follow);
   assetCache.initialize().catch(() => {});
 }

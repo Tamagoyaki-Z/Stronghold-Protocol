@@ -815,12 +815,18 @@ export function doctorNo(id) {
 
 /**
  * Latency pill ("58ms"), coloured by research 06 §3.4 tiers (<60 mint, <200 amber, else red).
- * @param {{ ms?: number|null, online?: boolean, class?: string }} props
+ * The tooltip shows the raw last round trip beside the displayed (filtered) value when the two differ — the pill
+ * shows net.ping (the minimum of the last five compensated samples), `raw` is net.pingRaw.
+ * @param {{ ms?: number|null, raw?: number|null, online?: boolean, class?: string }} props
  */
-export function PingPill({ ms, online = true, class: cls }) {
+export function PingPill({ ms, raw, online = true, class: cls }) {
   const ok = online && Number.isFinite(ms);
   const tier = !ok ? 'off' : ms < 60 ? 'low' : ms < 200 ? 'medium' : 'high';
-  return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${ok ? t('当前延迟 {ms}ms', { ms }) : t('未连接')}>
+  const rawMs = Number.isFinite(raw) ? Math.round(raw) : null;
+  const title = !ok ? t('未连接')
+    : rawMs != null && rawMs !== Math.round(ms) ? t('当前延迟 {ms}ms（原始 {raw}ms）', { ms, raw: rawMs })
+    : t('当前延迟 {ms}ms', { ms });
+  return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${title}>
     <${Icon} name=${ok ? 'signal' : 'wifiOff'} class="ping__icon" />
     <span class="ping__value">${ok ? Math.min(9999, Math.round(ms)) : '--'}</span><span class="ping__unit">ms</span>
   </span>`;

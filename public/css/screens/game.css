@@ -235,6 +235,10 @@
 .readybtn:disabled { border-color: var(--line-2); color: var(--text-dim); box-shadow: none; cursor: not-allowed; }
 .readybtn:disabled .readybtn__box { border-color: var(--line-2); }
 .readybtn.is-busy { opacity: .7; }
+/* 乐观界面反馈 (plan A): while g.ready is unanswered the button keeps its `is-busy` dim above and adds the sweep bar
+   (`.apend`, components.css) — a visible acknowledgement instead of a 30 % opacity dip no one notices. `is-on` still
+   follows m.private alone. */
+.readybtn[aria-busy="true"] { position: relative; }
 
 /* ---- bond strip ---------------------------------------------------------------------------------------- */
 .gm__bonds { position: absolute; left: 1.56rem; top: 1.36rem; right: 5.2rem; pointer-events: none;
