@@ -481,6 +481,11 @@ export const C2S = {
   'room.swapAsk': { to: isId },
   'room.swapAnswer': { from: isId, accept: isBool },
   'room.swapCancel': {},
+  // ⇄ 换到空位 (user request 2026-10-13): the SAME ⇄ control, aimed at an EMPTY seat of one's own room. A seat nobody
+  // holds has nobody to ask, so this one moves at once — no dialog, no room.swapAnswer. The gates are the swap's gates
+  // (waiting co-op lobby, an unready seated human, 开赛后禁止) plus the one that matters here: `to` must be empty
+  // (no human, no AI). The doctor's draft group follows its NEW seat index like in a swap (server/lobby.js regroupSeats).
+  'room.moveToEmpty': { to: (v) => isInt(v, 0, MAX_SEATS - 1) },
 
   // match
   'g.infoReady': { setupRevision: (v) => isInt(v, 0, 2 ** 31), $optional: ['setupRevision'] },

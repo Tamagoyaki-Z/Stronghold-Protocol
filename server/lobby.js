@@ -502,6 +502,8 @@ export class Lobby {
       case 'room.swapAsk': return this.swapAsk(session, msg);
       case 'room.swapAnswer': return this.swapAnswer(session, msg);
       case 'room.swapCancel': return this.swapCancel(session);
+      // ⇄ 换到空位 (header: moveToEmpty): nobody to negotiate with, so it moves at once.
+      case 'room.moveToEmpty': return this.moveToEmpty(session, msg);
       case 'room.transferHost': return this.transferHost(session, msg);
       case 'room.start': return this.start(session);
       case 'room.rerollSetup': return this.rerollSetup(session, msg);
@@ -929,7 +931,8 @@ export class Lobby {
   }
 
   /**
-   * A seat a swap may move right now: a seated, connected, UNREADY human whose session still lives in this room.
+   * A seat a swap or an 换到空位 may move right now: a seated, connected, UNREADY human whose session still lives in
+   * this room. The two flows share 准备后不再换位 (user rule 2026-10-12) and this one predicate.
    * @returns {Seat | null} the seat, or null when the player is a bot, a spectator, gone, offline or already readied
    */
   swappableSeat(room, playerId) {
@@ -938,6 +941,18 @@ export class Lobby {
     const session = this.registry.byId(playerId);
     if (!session || !session.connected || session.roomCode !== room.code) return null;
     return seat;
+  }
+
+  /**
+   * 换到空位 (user request 2026-10-13): the seat the doctor HOLDS may walk onto an EMPTY seat of its own room
+   * right now. Same gate as a swap (swappableSeat). `to` = the empty seat index.
+   * @returns {number} the seat index, or -1 when the move is not allowed (gone, off the clock, ready, bot, spectator)
+   */
+  emptySeatFor(room, playerId, to) {
+    if (!Number.isInteger(to) || to < 0 || to >= room.seats.length) return -1;
+    if (room.seats[to]) return -1;                 // taken by a player OR an AI
+    const seat = this.swappableSeat(room, playerId);
+    return seat && seat.seat !== to ? seat.seat : -1;
   }
 
   /**
@@ -1052,6 +1067,68 @@ export class Lobby {
     b.seat = from;
     room.seats[to] = a;
     room.seats[from] = b;
+    this.regroupSeats(room, [a, b]);
+  }
+
+  /**
+   * Re-cut the room's fixed draft groups after seats moved (⇄ 换位, 换到空位). The rule itself lives in ONE place —
+   * shared/playerCapacity.js poolGroupOf, which server/match/pool.js createPoolGroups applies again at match start
+   * (groups follow the occupied SEAT order) — and `room.state` carries the result on the very next frame
+   * (Room.toState → poolGroupOf(seat, occupied)). So a doctor whose seat index changed reads its new group, and the
+   * group it landed in, without the lobby keeping a second copy of the rule. Nothing is regrouped when the room has
+   * a single group (five or fewer players share one pool): then the frame carries no group field at all.
+   * @param {Room} room @param {Seat[]} moved the seats that changed index
+   */
+  regroupSeats(room, moved) {
+    const occupied = room.seats.filter(Boolean).length;
+    const groups = poolGroupSizes(occupied);
+    if (groups.length < 2) return [];
+    const out = moved.filter(Boolean).map((s) => ({ playerId: s.playerId, seat: s.seat, group: poolGroupOf(s.seat, occupied) }));
+    for (const m of out) {
+      this.log.info(`[lobby] ${room.code} ${m.playerId} is in draft group ${m.group + 1}/${groups.length} after moving to seat ${m.seat}`);
+    }
+    return out;
+  }
+
+  /**
+   * ⇄ 换到空位 (user request 2026-10-13): a doctor clicks the ⇄ on an EMPTY seat of its own room and moves there at
+   * once — no dialog, no consent, because nobody holds that seat. The occupied-seat flow is untouched: that one stays
+   * the LoL-style negotiation (room.swapAsk / room.swapAnswer), where only the target's answer moves a seat.
+   *
+   * Gates, all server-side (the client only greys its button out):
+   *   * the room must be waiting (`room.match` → ROOM_STARTED) and co-op (a solo room has one seat);
+   *   * the asker must HOLD a seat (a spectator is never seated by this) and must not be ready (准备后不再换位);
+   *   * the target seat must really be EMPTY — no human, no AI, no offline seat, no seat reserved by a grace timer;
+   *   * the target must be inside `room.capacity`.
+   * The seat RECORD travels with its playerId (loadout / ownership / DIY / skins / avatar follow the doctor, exactly
+   * like a swap), and the doctor's draft group is re-cut from its NEW seat index (regroupSeats → poolGroupOf), so a
+   * 6-seat room's 3+3 split really does hand it the other group's pool at match start.
+   */
+  moveToEmpty(session, { to }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (room.mode === 'solo') return fail(ERR.BAD_TARGET, 'a solo room has one seat');
+    if (!Number.isInteger(to) || to < 0 || to >= room.seats.length) {
+      return fail(ERR.BAD_TARGET, 'that seat does not exist');
+    }
+    const mine = room.seatOf(session.playerId);
+    if (!mine || mine.isBot || mine.left) return fail(ERR.SPECTATOR);
+    // 准备后不再换位: a doctor who readied for a draft group stays where that group put them (same rule as ⇄ 换位)
+    if (mine.ready) return fail(ERR.NOT_READY, 'a doctor who is ready cannot move to an empty seat');
+    if (room.seats[to]) return fail(ERR.BAD_TARGET, 'that seat is taken');
+    if (mine.seat === to) return OK;
+    const from = mine.seat;
+    room.seats[from] = null;
+    room.seats[to] = mine;
+    mine.seat = to;
+    // the host is the seat-0 record while the room waits (promoteHostSeat owns that, header); nobody else is touched
+    this.promoteHostSeat(room);
+    this.regroupSeats(room, [mine]);
+    this.broadcastState(room);
+    this.log.info(`[lobby] ${room.code} ${mine.name} moved to the empty seat ${to + 1}`);
+    return OK;
   }
 
   start(session) {

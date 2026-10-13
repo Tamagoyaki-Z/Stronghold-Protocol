@@ -24,7 +24,10 @@ const V1_EXTENSIONS = Object.freeze({
 // Published v1 has no new numeric IDs: these post-v1 business types deliberately use its JSON fallback.
 const V1_JSON_FALLBACK = Object.freeze({
   c2s: ['room.chat', 'room.setMatchmaking', 'lobby.join', 'lobby.spectate', 'room.skins',
-    'room.swapAsk', 'room.swapAnswer', 'room.swapCancel'],
+    'room.swapAsk', 'room.swapAnswer', 'room.swapCancel',
+    // 换到空位 (2026-10-13): the same shape as the swap negotiation above — a post-v1 business type with no free
+    // numeric id in published v1, so it travels as readable JSON (`{ t, to }`, no new id, no renumbering).
+    'room.moveToEmpty'],
   // m.layer (0.2.5, the own live prep-layer gain) is ephemeral and never replayed on resync — the same shape
   // of message as m.emergency, so it uses the readable JSON fallback rather than a new numeric id.
   s2c: ['m.chat', 'm.chatState', 'm.emergency', 'm.layer', 'room.swapAsked', 'room.swapEnded'],

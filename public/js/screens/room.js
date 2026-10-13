@@ -334,6 +334,33 @@ export function swapTarget(room, myId, seat) {
 }
 
 /**
+ * ⇄ 换到空位 (user request 2026-10-13): the SAME ⇄ control, but aimed at an EMPTY seat — nobody holds it, so there
+ * is nobody to ask and the click goes straight to the server (room.moveToEmpty; no dialog). One helper drives the
+ * button and its tests, and every rule it names is server-enforced too (server/lobby.js moveToEmpty): an unready
+ * seated human of a waiting co-op room, 开赛后不再出现, 准备后置灰. The empty seat is `null` in `room.state.seats[]`.
+ * @param {ReturnType<typeof roomFacts>} facts
+ * @param {number} index the EMPTY seat's index
+ * @param {any} myId
+ * @returns {{ show: boolean, allowed: boolean, hint: string|null }}
+ */
+export function moveToEmptySeat(facts, index, myId) {
+  const mine = facts.mine;
+  const show = !!mine && !mine.isBot && !mine.left && facts.coop && !facts.inMatch && !facts.spectating;
+  if (!show || !Number.isInteger(index)) return { show: false, allowed: false, hint: null };
+  let hint = null;
+  // the host IS the seat-0 record while the room waits (server promoteHostSeat), so it never leaves P1 this way
+  if (facts.isHost) hint = t('房主固定在 P1，无法换到空位');
+  else if (mine.ready) hint = t('准备后无法换位');
+  else if (facts.swaps.mine) hint = t('等待对方确认…');
+  return { show, allowed: hint === null, hint: hint || t('换到该空位') };
+}
+
+/** {@link moveToEmptySeat} straight off a room.state payload, for callers (and tests) without a `facts` object. */
+export function moveToEmpty(room, myId, index) {
+  return moveToEmptySeat(roomFacts(room, myId), index, myId);
+}
+
+/**
  * The countdown anchor of an incoming ask. `room.state.swaps[].ttlMs` is the remainder the SERVER recomputed for the
  * frame just received, so the local deadline is `serverNow() + ttlMs` — re-taken only when a frame changes that pair,
  * because taking it on every render would freeze the countdown at its first value. The value is display-only: the
@@ -350,7 +377,7 @@ export function swapDeadline(ref, ask) {
   return ref.current.deadline;
 }
 
-export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap }) {
+export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onAddBot, onRemoveBot, onKick, onTransferHost, onSwap, onMoveToEmpty }) {
   const coop = room.mode !== 'solo';
   const chip = group >= 0 ? html`<${GroupChip} group=${group} />` : null;
   // 房间头像 (user decision 2026-10-13): the art this doctor picked on the 皮肤 screen, or null ⇒ the card keeps
@@ -359,6 +386,9 @@ export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onA
   const skin = seatAvatarFor(seat, data.get('assets'));
   if (!seat) {
     const canAdd = coop && facts.isHost;
+    // ⇄ 换到空位 (user request 2026-10-13): this empty seat has nobody to negotiate with, so the ⇄ moves the clicker
+    // at once — 准备后置灰, 开赛后 the frame is inMatch and the control is gone. Occupied seats keep the negotiation.
+    const move = moveToEmptySeat(facts, index, myId);
     return html`<article class=${`seat seat--empty${groupedClass(group)}`} style=${cardStyle(index, group)}>
       <header class="seat__head"><span class="seat__no num">P${index + 1}</span><${MicroLabel}>SEAT ${String(index + 1).padStart(2, '0')}<//>${chip}</header>
       <div class="seat__art seat__art--empty">
@@ -371,7 +401,12 @@ export function SeatCard({ seat, index, room, facts, myId, busy, group = -1, onA
           ? html`<${Button} variant="secondary" size="sm" icon="robot" block=${true} loading=${busy === `add`}
               disabled=${!!busy || !facts.canAddBot} title=${facts.aiLimitReached ? t('已达到服务器允许的 AI 队友上限') : undefined}
               onClick=${onAddBot}>${t('添加 AI 队友')}<//>`
-          : html`<span class="seat__state t-dim">${t('空位')}</span>`}
+          : move.show ? null : html`<span class="seat__state t-dim">${t('空位')}</span>`}
+        ${move.show ? html`<${Tooltip} text=${move.hint}>
+          <${Button} variant="secondary" size="sm" square=${true} icon="swap" loading=${busy === `move${index}`}
+            disabled=${!!busy || !move.allowed} onClick=${() => onMoveToEmpty(index)}
+            data-testid=${`move-empty-${index}`} aria-label=${t('换到该空位')} />
+        <//>` : null}
       </footer>
     </article>`;
   }
@@ -670,6 +705,8 @@ export function RoomScreen() {
     }
   };
   // ⇄ 换位: ask another doctor for its seat. The target decides; the seats move when the server says so.
+  // ⇄ 换到空位: nobody holds that seat, so there is nothing to confirm — one request, no dialog (server.moveToEmpty)
+  const moveToEmptySeat = (seat) => run(`move${seat}`, () => net.request('room.moveToEmpty', { to: seat }));
   const askSwap = (seat, name, playerId) => run(`swap${seat}`, async () => {
     const yes = await confirmDialog({ title: t('换位请求'),
       text: t('确定向「{name}」发起换位请求吗？对方同意后双方席位才会互换。', { name: name || t('博士') }),
@@ -747,7 +784,7 @@ export function RoomScreen() {
     <main class=${`seats${coop ? facts.seats.length > 10 ? ' seats--dense' : facts.seats.length > 4 ? ' seats--expanded' : '' : ' seats--solo'}${coop && facts.seats.length === 10 ? ' seats--ten' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
         myId=${me.playerId} busy=${busy} group=${groupOf(s, i)} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost}
-        onSwap=${askSwap} />`)}
+        onSwap=${askSwap} onMoveToEmpty=${moveToEmptySeat} />`)}
       ${coop ? null : html`<aside class="solo-brief brackets">
         <${MicroLabel} tone="mint">BRIEFING<//>
         <h2>${DIFFICULTY_NAMES[room.difficulty] ? t(DIFFICULTY_NAMES[room.difficulty]) : ''}<span class="num t-dim"> ${info.code}</span></h2>
