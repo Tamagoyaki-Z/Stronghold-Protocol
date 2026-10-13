@@ -16,6 +16,10 @@ export const ASSET_CACHE_MIME = Object.freeze({
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.atlas': 'text/plain; charset=utf-8', '.obj': 'text/plain; charset=utf-8',
   '.skel': 'application/octet-stream',
+  // The 0.2.5 battlefield scenes (tools/local-extract/scenes.py) declare one `scene.bin` per stage
+  // (kind SceneData) in data/local-assets.json — a binary mesh blob, i.e. data, never code. It rides
+  // the same octet-stream rule as .skel; without it a scene-enabled install has no complete pack.
+  '.bin': 'application/octet-stream',
 });
 
 /** Canonical URLs are decoded paths, never queries, external URLs or executable resources. */

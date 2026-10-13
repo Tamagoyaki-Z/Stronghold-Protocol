@@ -1,6 +1,7 @@
 // 皮肤选择器 (docs/SKINS.md) — the 皮肤 section of the 干员调配 screen's detail panel.
 //
-// All 174 skins are built-in. Operators without skins return null silently.
+// All 174 skins are built-in, but an operator with none of them is NOT hidden any more: the 房间头像 row — and with
+// it the 「使用原皮」 entry — applies to EVERY operator (user request 2026-10-13, see RoomAvatarRow).
 // Outside match only: changes are persisted to localStorage and mirrored via room.skins.
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
@@ -35,6 +36,46 @@ function RoomAvatarButton({ chessId, skinId, chosen, onPick }) {
       onClick=${(e) => { e.stopPropagation(); onPick(chessId, skinId); }}>
     ${chosen ? html`<${MicroLabel}>${t('房间头像')}<//>` : html`<span aria-hidden="true">◎</span>`}
   </button>`;
+}
+
+/**
+ * The 房间头像 row of one operator's 皮肤 section: what the rest of the room currently sees, plus the explicit picks.
+ *
+ * 「使用原皮」 (`{ chessId, skinId: null }`) is the entry EVERY operator has — it names the operator itself and needs
+ * no installed skin at all, so an operator whose 皮肤 list is empty still offers it. The per-art ◎ buttons above
+ * (RoomAvatarButton) pick one specific skin; this row is where the operator's own art is spelled out.
+ *
+ * Pure (no hooks), exactly like SeatCard, so a test can call it and drive the pick through the injected `onPick`.
+ * `manifest` / `lookup` exist for the same reason `roomAvatarUrl` takes them: the resolver is the one under test.
+ * @param {{
+ *   chessId: string,
+ *   avatar: { chessId: string, skinId: string|null }|null,
+ *   hasSkins?: boolean,
+ *   manifest?: any,
+ *   lookup?: (group: string, id: string) => any,
+ *   onPick?: (chessId: string, skinId: string|null) => void,
+ *   onClear?: () => void,
+ * }} props
+ */
+export function RoomAvatarRow({ chessId, avatar, hasSkins = false, manifest, lookup, onPick = setRoomAvatar, onClear = clearRoomAvatar }) {
+  const m = manifest === undefined ? data.get('assets') : manifest;
+  const avatarArt = lookup ? roomAvatarUrl(m, avatar, lookup) : roomAvatarUrl(m, avatar);
+  // The reference is per operator + art, so 「使用原皮」 is marked only for THIS operator's own default art.
+  const usingDefault = !!avatar && avatar.chessId === chessId && (avatar.skinId ?? null) === null;
+  return html`<div class="lo-skins-avatar" data-testid="room-avatar-row" data-has-skins=${hasSkins ? '1' : '0'}>
+    <span class="lo-skins-avatar__label"><${MicroLabel}>ROOM AVATAR<//>${t('房间头像')}</span>
+    ${avatar
+      ? html`<span class="lo-skins-avatar__art" title=${t('房间头像')}>
+          ${avatarArt ? html`<img src=${avatarArt} alt="" />` : html`<span aria-hidden="true">?</span>`}
+        </span>
+        <span class="lo-skins-avatar__hint">${t('房间里其他人看到的就是这张')}</span>
+        <button type="button" class="lo-skins-avatar__clear" data-clear-room-avatar="1"
+          onClick=${() => onClear()}>${t('取消房间头像')}</button>`
+      : html`<span class="lo-skins-avatar__hint">${t('未设置：房间座位卡显示默认头像')}</span>`}
+    <button type="button" class=${cx('lo-skins-avatar__clear', 'lo-skins-avatar__default', usingDefault && 'is-on')}
+      data-testid="room-avatar-default" data-use-original-art="1" aria-pressed=${usingDefault ? 'true' : 'false'}
+      title=${t('使用原皮')} onClick=${() => onPick(chessId, null)}>${t('使用原皮')}</button>
+  </div>`;
 }
 
 /**
@@ -82,32 +123,24 @@ export function SkinSection({ chess }) {
   }
 
   const list = availableSkins(charId);
-  if (!list.length) return null; // 确认加载完且真无皮肤才隐藏
+  // 每位干员都有「使用原皮」 (user request 2026-10-13): the 房间头像 row needs no skin to exist, so the section is
+  // rendered even when this operator has none — only its list of skins is empty then.
+  const hasSkins = list.length > 0;
 
   const chosen = s.entries[chessId] || null;
   const defaultArt = data.get('assets')?.chars?.[charId]?.avatar || null;
   // 房间头像: the reference is per operator + skin, so exactly one card in this section can carry the mark
   const avatar = roomAvatarOf();
   const isAvatar = (sid) => !!avatar && avatar.chessId === chessId && (avatar.skinId ?? null) === sid;
-  const avatarArt = roomAvatarUrl(data.get('assets'), avatar);
 
   return html`<section class="lo-sec lo-sec--skin" data-testid="skin-section">
     <header class="lo-sec__head">
       <h3>${t('皮肤')}<${MicroLabel}>SKIN<//></h3>
-      <span class="lo-sec__note">${t('{n} 款可选', { n: list.length })}</span>
+      <span class="lo-sec__note">${hasSkins ? t('{n} 款可选', { n: list.length }) : t('该干员没有可选皮肤')}</span>
     </header>
-    <div class="lo-skins-avatar" data-testid="room-avatar-row">
-      <span class="lo-skins-avatar__label"><${MicroLabel}>ROOM AVATAR<//>${t('房间头像')}</span>
-      ${avatar
-        ? html`<span class="lo-skins-avatar__art" title=${t('房间头像')}>
-            ${avatarArt ? html`<img src=${avatarArt} alt="" />` : html`<span aria-hidden="true">?</span>`}
-          </span>
-          <span class="lo-skins-avatar__hint">${t('房间里其他人看到的就是这张')}</span>
-          <button type="button" class="lo-skins-avatar__clear" data-clear-room-avatar="1"
-            onClick=${() => clearRoomAvatar()}>${t('取消房间头像')}</button>`
-        : html`<span class="lo-skins-avatar__hint">${t('未设置：房间座位卡显示默认头像')}</span>`}
-    </div>
-    <div class="lo-skins" role="radiogroup" aria-label=${t('选择皮肤')}>
+    <${RoomAvatarRow} chessId=${chessId} avatar=${avatar} hasSkins=${hasSkins} />
+    ${hasSkins
+      ? html`<div class="lo-skins" role="radiogroup" aria-label=${t('选择皮肤')}>
       <button type="button" role="radio" aria-checked=${chosen ? 'false' : 'true'} data-skin=""
         class=${cx('lo-skin', 'lo-skin--default', !chosen && 'is-on')} onClick=${() => clearSkin(chessId)}>
         <span class="lo-skin__art">
@@ -146,6 +179,7 @@ export function SkinSection({ chess }) {
           <${RoomAvatarButton} chessId=${chessId} skinId=${x.id} chosen=${isAvatar(x.id)} onPick=${setRoomAvatar} />
         </button>`;
       })}
-    </div>
+    </div>`
+      : null}
   </section>`;
 }

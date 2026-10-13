@@ -8,7 +8,10 @@ export const MAX_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_CATALOG_FILES = 100000;
 export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
 const SHA = /^[a-f0-9]{64}$/;
-const TYPES = /\.(?:png|jpe?g|gif|webp|avif|bmp|mp3|m4a|aac|ogg|oga|opus|wav|woff2?|ttf|otf|css|json|atlas|obj|skel)$/i;
+// `bin` = the 0.2.5 battlefield scene meshes (public/assets/local/scene/*/scene.bin, kind SceneData):
+// browser-side validation must accept exactly what server/assetCacheCatalog.js packs, or the catalog is
+// rejected as ASSET_CACHE_BAD_CATALOG whenever an install has the extracted scenes.
+const TYPES = /\.(?:png|jpe?g|gif|webp|avif|bmp|mp3|m4a|aac|ogg|oga|opus|wav|woff2?|ttf|otf|css|json|atlas|obj|skel|bin)$/i;
 
 export function assetCacheError(code, cause) {
   return Object.assign(new Error(code, cause ? { cause } : undefined), { code });

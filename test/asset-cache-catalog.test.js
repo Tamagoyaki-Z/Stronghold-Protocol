@@ -181,3 +181,25 @@ test('catalog matches browser validation and canonical URL map for aliases', asy
   assert.equal(map.get('/media/a'), map.get('/assets/audio/a.mp3'));
   assert.equal(map.get('/assets/audio/a.ogg'), map.get('/media/a.ogg'));
 });
+
+test('the 0.2.5 battlefield scene meshes enter the pack: one scene.bin per stage, kind SceneData', async (t) => {
+  const prefix = '/assets/local/scene/act1autochess_m01';
+  const local = { groups: { 'scene/act1autochess_m01': {
+    bin: { path: `${prefix}/scene.bin`, kind: 'SceneData', bytes: 4 },
+    scene: { path: `${prefix}/scene.json`, kind: 'TextAsset' },
+    lm0: { path: `${prefix}/lm0.webp`, kind: 'Lightmap', w: 1024, h: 1024 },
+  } } };
+  const f = await fixture(t, { icon: '/assets/icon.png' }, local);
+  await f.put('/assets/icon.png', 'picture');
+  await f.put(`${prefix}/scene.bin`, 'mesh'); await f.put(`${prefix}/scene.json`, '{}'); await f.put(`${prefix}/lm0.webp`, 'webp');
+  const catalog = await createAssetCacheCatalog(f);
+  assert.equal(catalog.complete, true, `no scene file may be dropped: ${JSON.stringify(catalog.missing)}`);
+  assert.deepEqual(catalog.files.map((x) => x.url),
+    ['/assets/icon.png', `${prefix}/lm0.webp`, `${prefix}/scene.bin`, `${prefix}/scene.json`],
+    'the mesh is catalogued, not reported as an unsupported resource type');
+  assert.equal(catalog.files.find((x) => x.url.endsWith('.bin')).type, 'application/octet-stream');
+  // the shared/browser validator has to accept exactly what the packer emits, or the whole catalog is refused
+  assert.doesNotThrow(() => validateAssetCatalog(catalog));
+  // while executable and archived code still never becomes cacheable
+  for (const url of ['/assets/a.js', '/assets/a.exe', '/assets/a.zip']) assert.ok(assetCacheURLProblem(url), url);
+});

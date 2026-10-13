@@ -295,3 +295,39 @@ test('SeatCard render: a seat with a room avatar is never blank, and one without
   // the empty seat still renders its own radar placeholder (no avatar involved)
   assert.equal(frames(SeatCard({ seat: null, index: 3, ...props })).length, 0);
 });
+
+test('原皮 room avatar ({ chessId, skinId: null }): the seat card draws the operator art — a skinless operator included', () => {
+  // c1 has two skins, c2 has none: 原皮 must be the same entry for both (user request 2026-10-13)
+  const M = { chars: { c1: { avatar: 'a/c1.png', skins: { s1: { avatar: 'a/c1_s1.png' }, s2: { avatar: 'a/c1_s2.png' } } }, c2: { avatar: 'a/c2.png' } } };
+  const CHESS = {
+    chess_char_9_01_a: { chessId: 'chess_char_9_01_a', charId: 'c1' },
+    chess_char_9_01_b: { chessId: 'chess_char_9_01_b', charId: 'c1', baseId: 'chess_char_9_01_a' },
+    chess_char_2_01_a: { chessId: 'chess_char_2_01_a', charId: 'c2' },
+  };
+  const lookup = (group, id) => (group === 'chess' ? CHESS[id] || null : null);
+
+  // ③ the client shows the DEFAULT 立绘 — the operator's own art, which is what roomAvatarUrl/seatAvatarFor draw
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: null }, lookup), 'a/c1.png');
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'chess_char_9_01_a', skinId: null } }, M, lookup), 'a/c1.png');
+  // exactly and only that art: never one of the operator's skins picked at random (the bug ③ guards against)
+  for (const s of ['a/c1_s1.png', 'a/c1_s2.png']) {
+    assert.notEqual(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: null }, lookup), s);
+  }
+  // never the empty placeholder either: the 原皮 reference resolves, it does not fall through to "nothing to draw"
+  assert.notEqual(roomAvatarUrl(M, { chessId: 'chess_char_9_01_a', skinId: null }, lookup), null);
+  // the 精锐 card reaches the same operator art through baseId
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_9_01_b', skinId: null }, lookup), 'a/c1.png');
+  // ④ an operator with NO skins at all walks the very same path, client side
+  assert.equal(roomAvatarUrl(M, { chessId: 'chess_char_2_01_a', skinId: null }, lookup), 'a/c2.png');
+  assert.equal(seatAvatarFor({ avatar: { chessId: 'chess_char_2_01_a', skinId: null } }, M, lookup), 'a/c2.png');
+  // and "no room avatar" is still distinct from 原皮: unset ⇒ the seat card keeps ITS placeholder
+  assert.equal(seatAvatarFor({ avatar: null }, M, lookup), null);
+  // the seat card itself hands that art to AvatarFrame when data/assets.json is available
+  const source = room({ capacity: 4, seats: [{ ...host, avatar: { chessId: 'chess_char_2_01_a', skinId: null } }, guest, bot, null] });
+  const facts = roomFacts(source, 'host');
+  const props = { room: source, facts, myId: 'host', busy: null, onAddBot() {}, onRemoveBot() {}, onKick() {}, onTransferHost() {}, onSwap() {} };
+  assert.equal(seatAvatarFor(source.seats[0], M, lookup), 'a/c2.png');
+  assert.equal([...walk(SeatCard({ seat: source.seats[0], index: 0, ...props }))]
+    .filter((n) => typeof n.type === 'function' && n.type.name === 'AvatarFrame').length, 1,
+  'the seat card still renders exactly one frame for a 原皮 avatar');
+});

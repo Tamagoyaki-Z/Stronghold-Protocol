@@ -281,6 +281,54 @@ describe('room.skins (lobby): freeze on the session and the seat, hand over to t
     assert.deepEqual(m.opts.seats[0].skins, { [SKADI]: SKIN_B }, 'the drop happened once, in the lobby');
     assert.ok(Object.isFrozen(m.opts.seats[0].skins));
   });
+
+  test('「使用原皮」: seats[].avatar === { chessId, skinId: null }, and the WHOLE room receives that exact frame', async () => {
+    const host = await pool.player('OriHost');
+    const guest = await pool.player('OriGuest');
+    const watch = await pool.player('OriWatch');
+    await ok(host, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+    const created = await host.waitFor('room.state', (s) => s.hostId === host.id);
+    await ok(guest, { t: 'room.join', code: created.code });
+    await ok(watch, { t: 'room.join', code: created.code });
+    await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 3);
+
+    // ④ an operator with NO installed skin at all: 原皮 is the only art it can offer, and it must still work
+    const skinless = Object.values(DATA.chess).find((c) => {
+      if (c.isGolden || c.isDiy || c.isHidden || c.visible === false || (c.baseId && c.baseId !== c.chessId)) return false;
+      const skins = manifest.chars?.[c.charId]?.skins;
+      return !skins || Object.keys(skins).length === 0;
+    });
+    assert.ok(skinless, 'the real data has a normal chess record whose operator has no skin');
+
+    // The wait is on the skins map (a change that ALWAYS shows up), so a 原皮 avatar published as `null` — the
+    // "cleared / never picked" value — fails the deepEqual below instead of hanging the suite.
+    const edited = (s) => s.seats.find((x) => x && x.playerId === guest.id)?.skins?.[SKADI] === SKIN_A;
+    const hostSees = host.waitFor('room.state', edited);
+    const watcherSees = watch.waitFor('room.state', edited);
+    // ① exactly the reference the UI writes: { chessId, skinId: null }
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: skinless.chessId, skinId: null } });
+
+    // ② every OTHER member of the room (the host and a third, passive watcher) gets the same reference
+    for (const frame of [await hostSees, await watcherSees]) {
+      assert.equal(frame.seats.filter(Boolean).length, 3, 'all three members are still seated');
+      assert.deepEqual(frame.seats.find((x) => x.playerId === guest.id).avatar, { chessId: skinless.chessId, skinId: null },
+        '原皮 travels as a real reference, never as null and never as a skin');
+      assert.deepEqual(frame.seats.find((x) => x.playerId === guest.id).skins, { [SKADI]: SKIN_A },
+        'the skins map is untouched by the 原皮 avatar');
+      assert.equal(frame.seats.find((x) => x && x.isBot), undefined, 'no bot in this room');
+      assert.equal(frame.seats.find((x) => x.playerId === host.id).avatar, null, 'a doctor who picked none says so');
+    }
+    // a skin of the same operator replaces it, and the operator may be one that has skins
+    const repl = watch.waitFor('room.state', (s) => s.seats.find((x) => x && x.playerId === guest.id)?.avatar?.skinId === SKIN_A);
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: SKIN_A } });
+    assert.deepEqual((await repl).seats.find((x) => x.playerId === guest.id).avatar, { chessId: SKADI, skinId: SKIN_A });
+    // back to 原皮 of that operator: still a reference, now for an operator that HAS skins
+    const back = watch.waitFor('room.state', (s) => s.seats.find((x) => x && x.playerId === guest.id)?.avatar?.chessId === SKADI
+      && s.seats.find((x) => x && x.playerId === guest.id).avatar.skinId === null);
+    await ok(guest, { t: 'room.skins', skins: { [SKADI]: SKIN_A }, avatar: { chessId: SKADI, skinId: null } });
+    assert.deepEqual((await back).seats.find((x) => x.playerId === guest.id).avatar, { chessId: SKADI, skinId: null });
+    await ok(guest, { t: 'room.leave' });
+  });
 });
 
 describe('room.skins during a match: handed to the running match when it can take it', () => {
