@@ -479,6 +479,10 @@ export class UnitView {
     // enemies: the official prefab's size factor (1 for operators, summons and enemies at the standard size)
     const def = this.isEnemy && ctx.lookupDef ? ctx.lookupDef(info) : null;
     this.modelK = this.isEnemy ? enemyModelScale(def) : 1;
+    // the art's own horizontal offset (artX): the official huge unit's hit-rectangle offset, data/enemies.json
+    // `hitArea.dx` — server/sim/body.js hitRect centres the rectangle on x + dx. 0 for every other unit, and for
+    // dx = 0, so what those units draw is exactly what they drew before (user report: 假想敌：管 隐秘核心).
+    this.artDx = Number(def?.hitArea?.dx) || 0;
     // a fast enemy walks on its model's own Run cycle when it has one (PR #275 by @xcdoge: 猎狗pro, moveSpeed 1.9, Run_Loop
     // 0.53 s next to Move_Loop 0.80 s; also 深池侦察犬 1.7). [ASSUMED] the threshold: faster than the standard 1
     this.moveFast = this.isEnemy && Number(def?.stats?.moveSpeed) > 1;
@@ -884,6 +888,16 @@ export class UnitView {
   setWorld(x, y, z = 0) { this.x = x; this.y = y; this.z = z; }
 
   /**
+   * The world x the art is DRAWN at: the unit's own x plus the official huge unit's hit-rectangle offset
+   * (`hitArea.dx`; server/sim/body.js hitRect centres the rectangle on x + dx), so the model sits on the tiles the
+   * ranges light up (user report: 假想敌：管 隐秘核心's art read as one tile left of its range). dx = 0 — every unit
+   * without a `hitArea`, which is all of them but that one boss — returns `this.x` itself: nothing moves.
+   * The Y anchor stays `this.y` on purpose: the art is feet-anchored, and a huge unit's `dy = 1` lifts the RECTANGLE
+   * above the feet (the official's 向上偏移1.0), so adding dy would raise all seven huge units by a tile.
+   */
+  artX() { return this.artDx ? this.x + this.artDx : this.x; }
+
+  /**
    * The sampled position: the view's — unless a push / pull slide owns it (slideTo), which only anchors where it eases
    * to on it, from the snapshot that carries the destination on (`at`; before that the sample is still sliding or
    * snapping there). sync() starts with it; a dying view gets nothing else (syncView: the DIE window of the snapshots),
@@ -1195,7 +1209,9 @@ export class UnitView {
     // CharacterAnimator.OnFinish, when the finish state ends; a knocked-down flyer lies on the ground
     const hoverTo = this.flying && (this.alive || (this.dying > DIE_FADE_TAIL && !this.down)) ? FLY_HOVER : 0;
     if (this.hover !== hoverTo) this.hover = Math.abs(hoverTo - this.hover) < 1e-3 ? hoverTo : this.hover + (hoverTo - this.hover) * Math.min(1, dt * 6);
-    const p = cam.project(this.x, this.y, this.z + this.hover + this.lift, this.screen);
+    // the art's anchor (artX): the unit's position, or a huge unit's shifted onto its hit rectangle
+    const ax = this.artX();
+    const p = cam.project(ax, this.y, this.z + this.hover + this.lift, this.screen);
     const s = p.s;
     // fades
     if (this.fadeIn < 1) this.fadeIn = Math.min(1, this.fadeIn + dt * 4);
@@ -1221,7 +1237,7 @@ export class UnitView {
     this.lunge = Math.max(0, this.lunge - dt * 5);
     const lx = this.lungeDir.x * lungeK, ly = this.lungeDir.y * lungeK;
     let bx = p.x, by = p.y;
-    if (lungeK) { const q = cam.project(this.x + lx, this.y + ly, this.z + this.hover + this.lift, LG_P); bx = q.x; by = q.y; }
+    if (lungeK) { const q = cam.project(ax + lx, this.y + ly, this.z + this.hover + this.lift, LG_P); bx = q.x; by = q.y; }
     this.root.position.set(bx, by);
     this.root.alpha = alpha;
     this.root.zIndex = unitDepthKey(cam, this.x, this.y, this.lift);
@@ -1233,7 +1249,7 @@ export class UnitView {
     // flyer's lies on the tile under it while its body hovers from the road (shadowZ, GitHub #277)
     const shz = this.shadowZ ?? this.z;
     placeOnGround(this.ctx, this.shadow, this.ctx.layers.shadow, this.y, shz);
-    const sh = cam.project(this.x, this.y, shz, SH_P);
+    const sh = cam.project(ax, this.y, shz, SH_P);
     this.shadow.position.set(sh.x, sh.y);
     const shw = s * (this.isBoss ? 1.6 : 0.95) / this.shadow.texture.width;
     this.shadow.scale.set(shw, shw * (this.shadow.texture === shadowTexture() ? 1 : 1.05));
