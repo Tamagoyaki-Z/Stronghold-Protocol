@@ -35,6 +35,9 @@ export function unitInfo(u) {
     tier: d.tier ?? (d.rank === 'BOSS' ? 3 : d.rank === 'ELITE' ? 2 : 1),
     golden: !!d.golden,
     spine: d.spine ?? d.charId ?? u.defId,
+    // 干员皮肤 (docs/SKINS.md): the operator's chosen skin, `undefined` (never null) when it wears none — the wire-format
+    // contract relies on JSON.stringify dropping the key. Without it every battle unit falls back to its default model.
+    skin: u.skin ?? undefined,
     avatar: d.avatar ?? d.charId ?? u.defId,
     x: r2(u.x),
     y: r2(u.y),

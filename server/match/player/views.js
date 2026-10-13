@@ -11,6 +11,8 @@ import { bountyText, bountyCard } from '../choices.js';
 export class PlayerViews {
   pieceView(p, rc = null) {
     const rec = p.kind === 'item' ? this.gd.item(p.id) : p.kind === 'token' ? this.gd.token(p.id) : this.gd.chess(p.id);
+    // 干员皮肤 (docs/SKINS.md): only chess wear a skin; `null` = this piece has none
+    const skin = p.kind === 'chess' ? (this.skins[(rec && rec.baseId) || p.id] || this.skins[p.id] || null) : null;
     const v = {
       uid: p.uid,
       kind: p.kind,
@@ -20,6 +22,9 @@ export class PlayerViews {
       items: p.kind === 'chess' ? (p.items || []).map((it) => ({ uid: it.uid, id: it.id })) : [],
       count: p.kind === 'token' ? (p.count || 1) : 1,
       ownerUid: p.kind === 'token' ? p.ownerUid ?? null : null,
+      // 干员皮肤 (docs/SKINS.md): omitted when the piece wears none — DESIGN §8.3 fixes the prep piece shape, and an
+      // install with no skins stays byte-identical to before
+      ...(skin ? { skin } : null),
     };
     if (rc) { v.row = rc[0]; v.col = rc[1]; v.dir = pieceDir(p); }
     return v;
