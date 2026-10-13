@@ -112,6 +112,7 @@ import { KITTED_CHARS } from './sim/content/kits/index.js';
 import { LobbyDiscovery } from './lobbyDiscovery.js';
 import { assetCacheReadinessMatches } from '../shared/assetCache.js';
 import { MatchChat } from './matchChat.js';
+import { poolGroupSizes, poolGroupOf } from '../shared/playerCapacity.js';
 
 /** Room code alphabet: uppercase letters without I and O (and no digits, so no 0/1). */
 export const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -280,6 +281,14 @@ export class Room {
    *   instead of a number this class would have to guess from a timestamp taken when it was built
    */
   toState(nowMs = Date.now()) {
+    const occupied = this.seats.filter(Boolean).length;
+    // The fixed draft groups of this occupancy, cut in occupied seat order (shared/playerCapacity.js -- the same
+    // rule server/match/pool.js createPoolGroups applies at match start, so a swap re-cuts them and this frame
+    // carries it). One group means the WHOLE ROOM shares a single card pool: then there is no grouping to show,
+    // so the frame carries neither `groups` nor a per-seat `group` (1-5 players). Six or more split into A/B/C...
+    // and both appear -- the 0.2.3 contract the room screen reads (room.state.groups / seats[i].group).
+    const sizes = poolGroupSizes(occupied);
+    const grouped = sizes.length > 1;
     return {
       t: 'room.state',
       code: this.code,
@@ -291,17 +300,20 @@ export class Room {
       aiPicksLast: this.aiPicksLast,
       allowMatchmaking: this.allowMatchmaking,
       inMatch: !!this.match,
+      ...(grouped ? { groups: sizes } : {}),
       // v1 extension metadata only: message bodies never ride room/public snapshots or result replay.
       chatMatchId: this.match && this.matchCtx?.live && !this.matchCtx.ended && !this.matchCtx.chat.closed
         ? this.matchCtx.chat.matchId : null,
       // 候室皮肤 (user decision 2026-10-12): the chosen operator skins are public to teammates, so the waiting room
       // can show them on the seat cards before the match exists. Same 口径 as the match descriptors (startMatch):
       // freezeSkins already dropped everything the data does not know, and a bot wears the default models.
-      seats: this.seats.map((s) => (s
+      seats: this.seats.map((s, i) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
           skins: s.isBot ? null : s.skins || null,
           // 房间头像: the art this doctor put on their seat card (null ⇒ the card keeps its default placeholder)
-          avatar: s.isBot ? null : s.avatar || null }
+          avatar: s.isBot ? null : s.avatar || null,
+          // the 0-based group of this SEAT (A = 0), or null without grouping / on an empty seat
+          group: grouped ? poolGroupOf(i, occupied) : null }
         : null)),
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
       // ⇄ 换位: who negotiates with whom, and how long the target still has to answer. The only place a client learns

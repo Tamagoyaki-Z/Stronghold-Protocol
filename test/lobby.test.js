@@ -544,8 +544,9 @@ describe('websocket lobby', () => {
     assert.equal(st.inMatch, false);
     assert.equal(st.seats.length, BASE_SEATS);
     // ③c (0.2.4): a seat carries its chosen skins (`null` = the default models, bots too) — the waiting room shows them
-    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true, skins: null, avatar: null });
+    assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true, skins: null, avatar: null, group: null });
     assert.deepEqual(st.seats.slice(1), [null, null, null]);
+
 
     const guest = await pool.player('Guest');
     const joined = await joinRoom(guest, st.code.toLowerCase());
@@ -872,7 +873,39 @@ describe('websocket lobby', () => {
     await expectError(probe, { t: 'room.join', code: st.code }, ERR.ROOM_NOT_FOUND);
   });
 
-  test('start flow: readiness gate → stub INFO_CHECK → end → back to LOBBY → play again', async () => {
+  // room.state 的分组字段 (0.2.3 契约, 合并时丢了): 6 人房端上 `groups` + 每座 `group`;
+  // 5 人及以下整个房间共用一个卡池, 所以 `groups` 根本不出现, `group` 为 null.
+  // 客户端 public/js/screens/room.js 两个字段都读 (服务器给了就用服务器的值).
+  test("room.state carries the fixed pool groups from six players up (the seat's group field)", async () => {
+    const host = await pool.player('Host');
+    const six = await pool.player('Six');
+    // build the six-seat room explicitly: the shared createRoom() helper fixes BASE_SEATS
+    await expectOk(host, { t: 'room.create', mode: 'coop', difficulty: 'HARD', capacity: 6 });
+    const st = await host.waitFor('room.state', (s) => s.hostId === host.id && s.mode === 'coop');
+    assert.equal(st.capacity, 6);
+    assert.equal(st.seats.length, 6);
+    assert.equal(st.groups, undefined, 'a lone host shares one pool: no groups field at all');
+    assert.equal(seatOf(st, host.id).group, null, 'and no per-seat group either');
+
+    for (let i = 0; i < 5; i++) await expectOk(host, { t: 'room.addBot' });
+    const full = await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 6);
+    assert.deepEqual(full.groups, [3, 3], 'six occupied seats split into two three-person groups');
+    assert.deepEqual(full.seats.map((s) => s && s.group), [0, 0, 0, 1, 1, 1], 'each seat carries its own group');
+    assert.equal(full.groups.length, 2);
+
+    const bot = seatOf(full, full.seats[5].playerId);
+    await expectOk(host, { t: 'room.removeBot', seat: bot.seat });
+    const five = await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 5);
+    assert.equal(five.groups, undefined, 'back under six the whole room shares one pool: the field disappears');
+    assert.ok(five.seats.filter(Boolean).every((s) => s.group === null), 'and every seat reports null again');
+
+    // a sixth HUMAN re-opens the groups (A/B split again)
+    const joined = await joinRoom(six, st.code);
+    assert.deepEqual(joined.groups, [3, 3], 'the sixth occupant makes it two three-person groups again');
+    assert.deepEqual(joined.seats.map((s) => s && s.group), [0, 0, 0, 1, 1, 1]);
+  });
+
+    test('start flow: readiness gate → stub INFO_CHECK → end → back to LOBBY → play again', async () => {
     const host = await pool.player('Host');
     const st = await createRoom(host, 'coop', 'HARD');
     const guest = await pool.player('Guest');
@@ -967,7 +1000,7 @@ describe('websocket lobby', () => {
     assert.equal(w.token, guest.token);
     const restored = await back.waitFor('room.state');
     assert.equal(restored.code, st.code);
-    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true, skins: null, avatar: null }, '③c: a resumed seat carries its skins again (null here)');
+    assert.deepEqual(seatOf(restored, guest.id), { seat: 1, playerId: guest.id, name: 'Guest2', isBot: false, ready: true, connected: true, skins: null, avatar: null, group: null }, '③c: a resumed seat carries its skins again (null here)');
     await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.connected === true);
 
     // an unknown token just creates a new identity
