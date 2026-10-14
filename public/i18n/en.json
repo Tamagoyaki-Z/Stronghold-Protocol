@@ -426,6 +426,7 @@
   "确认": "Confirm",
   "加载中": "Loading",
   "当前延迟 {ms}ms": "Current latency: {ms}ms",
+  "漂移 {drift}ms": "drift {drift}ms",
   "未连接": "Not connected",
   "正在同步同盟状态…": "Syncing Alliance state…",
   "服务器已更新，本局结束后刷新": "The server was updated. The page will refresh after this match",

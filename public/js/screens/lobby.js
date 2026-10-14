@@ -335,7 +335,7 @@ export function LobbyScreen() {
     <header class="topbar">
       <div class="topbar__left">
         <${Button} variant="ghost" size="sm" icon="chevronLeft" onClick=${backToTitle} title=${t('返回标题')}>${t('返回')}<//>
-        <${PingPill} ms=${conn.ping} online=${online} />
+        <${PingPill} ms=${conn.ping} online=${online} drift=${conn.pingDrift} />
         <${LobbyOnlinePill} count=${discoveryState.online} connected=${online} />
         <${AssetCacheButton} />
         <${ResumeMatchButton} />

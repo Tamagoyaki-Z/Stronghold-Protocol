@@ -615,18 +615,62 @@ describe('net.js', () => {
     assert.ok(net._loopLag > 0, 'a steadily late timer still reports lag');
   });
 
-  test('a heavily delayed pong is never displayed as 0 ms', async () => {
+  test('the pill shows the real WebSocket round trip, not a drift-compensated value', async () => {
     const { net, ws, timers } = await onlineNet();
-    net._loopLag = 250; // the over-subtracting estimate a 10 s worst-case window produced
+    const sample = (rtt, lag) => {
+      net.probe();
+      const ping = ws().last('ping');
+      timers.advance(rtt);
+      net._loopLag = lag; // set just before the reply so the lag probe's own tick cannot overwrite it
+      ws().recv({ t: 'pong', c: ping.c, s: 1 });
+    };
+    sample(40, 0);
+    assert.equal(net.ping, 40, 'the first measured round trip is displayed as measured');
+    sample(200, 30); // the client stalled: the old口径 would have subtracted 30 and reported 170
+    assert.equal(net.pingRaw, 200, 'the tooltip keeps the latest raw sample');
+    assert.equal(net.pingDrift, 30, 'the drift estimate is kept for the tooltip');
+    assert.equal(net.pingCompensated, 170, 'the old compensated value still exists (tooltip only)');
+    assert.equal(net.ping, 40, 'the display stays on the smallest REAL sample, never the compensated 170');
+    assert.notEqual(net.ping, net.pingCompensated, 'the displayed value is never the compensated one');
+    assert.equal(net.snapshot().pingDrift, 30, 'snapshot carries the drift for the pill tooltip');
+    assert.equal(net.snapshot().pingCompensated, 170);
+  });
+
+  test('a tiny round trip is shown honestly: never 0, never negative', async () => {
+    const { net, ws, timers } = await onlineNet();
+    const { PING_DISPLAY_FLOOR_MS } = await mod('net.js');
+    assert.equal(PING_DISPLAY_FLOOR_MS, 1);
     net.probe();
     const ping = ws().last('ping');
-    timers.advance(200);
-    ws().recv({ t: 'pong', c: ping.c, s: 1 });
-    assert.equal(net.pingRaw, 200, 'the tooltip still shows the raw round trip');
-    assert.ok(net.ping > 0, `the display cannot collapse to 0 (got ${net.ping})`);
-    const minRaw = Math.min(...net._rawSamples.map((s) => s.rtt));
-    assert.ok(net.ping >= minRaw, `the display stays at or above the window's smallest raw rtt (${minRaw})`);
-    assert.ok(net.ping >= 20, `and above the absolute floor (got ${net.ping})`);
+    ws().recv({ t: 'pong', c: ping.c, s: 1 }); // a sub-millisecond (loopback) reply: rtt rounds to 0
+    assert.equal(net.pingRaw, 0, 'the raw sample is honestly 0 for a sub-millisecond reply');
+    assert.equal(net.ping, 1, 'the pill shows the 1 ms floor — a real 0 ms reading is never rendered');
+    assert.ok(net.ping > 0, 'never 0');
+    net.probe();
+    ws().recv({ t: 'pong', c: timers.now() + 99999, s: 1 }); // implies a negative rtt: dropped by _onPong
+    assert.equal(net.ping, 1, 'an impossible (negative) sample cannot lower the display either');
+  });
+
+  test('the ping tooltip still carries the drift information (4 packs included)', async () => {
+    const { pingTitle } = await mod('ui/components.js');
+    const { t } = await import(pathToFileURL(path.join(ROOT, 'shared/i18n.js')).href);
+    assert.equal(pingTitle({ ms: 44, raw: 44, drift: 0, online: true }), t('当前延迟 {ms}ms', { ms: 44 }),
+      'no drift yet: the plain reading, unchanged from the old tooltip');
+    assert.equal(pingTitle({ ms: 44, raw: 280, drift: 0, online: true }),
+      t('当前延迟 {ms}ms（原始 {raw}ms）', { ms: 44, raw: 280 }),
+      'a jittery last sample is still reported beside the real round trip');
+    assert.equal(pingTitle({ ms: 44, raw: 280, drift: 12, online: true }),
+      `${t('当前延迟 {ms}ms（原始 {raw}ms）', { ms: 44, raw: 280 })} · ${t('漂移 {drift}ms', { drift: 12 })}`,
+      'the drift estimate is now the tooltip-only explanation');
+    assert.equal(pingTitle({ ms: 3, raw: 3, drift: 12, online: true }),
+      `${t('当前延迟 {ms}ms', { ms: 3 })} · ${t('漂移 {drift}ms', { drift: 12 })}`,
+      'a tiny REAL round trip is shown as measured (3 ms) — nothing is compensated up');
+    assert.equal(pingTitle({ ms: null, raw: null, drift: null, online: false }), t('未连接'));
+    for (const l of ['en', 'ja', 'ko', 'zh-TW']) {
+      const pack = JSON.parse(readFileSync(path.join(ROOT, 'public/i18n', `${l}.json`), 'utf8'));
+      assert.ok(Object.prototype.hasOwnProperty.call(pack, '漂移 {drift}ms'), `${l}.json has the new drift msgid`);
+      assert.ok(String(pack['漂移 {drift}ms']).includes('{drift}'), `${l}.json keeps the {drift} placeholder`);
+    }
   });
 
   test('silent socket is detected and replaced', async () => {

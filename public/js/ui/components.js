@@ -2,7 +2,7 @@
 //
 // Exports: html (bound htm), Icon, Button, Panel, MicroLabel, Chevrons, HexBadge, TierChip,
 // BondDisc, SevenSeg, Countdown, Modal, confirmDialog/alertDialog + DialogHost, Tooltip +
-// TooltipLayer, ProgressBar, Tabs, Spinner, AvatarFrame, PhaseBanner, ResultDialog, PingPill, DifficultyTag,
+// TooltipLayer, ProgressBar, Tabs, Spinner, AvatarFrame, PhaseBanner, ResultDialog, PingPill, pingTitle, DifficultyTag,
 // DifficultyIcon, TextField, UiHosts (mount once: dialogs + tooltips), useTicker, secondsLeft/hasDeadline,
 // roman(), doctorNo().
 //
@@ -837,18 +837,32 @@ export function doctorNo(id) {
 }
 
 /**
- * Latency pill ("58ms"), coloured by research 06 §3.4 tiers (<60 mint, <200 amber, else red).
- * The tooltip shows the raw last round trip beside the displayed (filtered) value when the two differ — the pill
- * shows net.ping (the minimum of the last five compensated samples), `raw` is net.pingRaw.
- * @param {{ ms?: number|null, raw?: number|null, online?: boolean, class?: string }} props
+ * Tooltip text of the latency pill (pure: the same inputs always give the same string, and the tests pin it).
+ * `ms` is the displayed REAL WebSocket round trip, `raw` the last raw sample, `drift` this client's own
+ * main-thread drift estimate — shown for context only, it never changes the number on the pill.
+ * @param {{ ms?: number|null, raw?: number|null, drift?: number|null, online?: boolean }} p
+ * @returns {string}
  */
-export function PingPill({ ms, raw, online = true, class: cls }) {
+export function pingTitle({ ms, raw, drift, online = true }) {
+  if (!(online && Number.isFinite(ms))) return t('未连接');
+  const rawMs = Number.isFinite(raw) ? Math.round(raw) : null;
+  const base = rawMs != null && rawMs !== Math.round(ms) ? t('当前延迟 {ms}ms（原始 {raw}ms）', { ms, raw: rawMs })
+    : t('当前延迟 {ms}ms', { ms });
+  const driftMs = Number.isFinite(drift) ? Math.max(0, Math.round(drift)) : null;
+  return driftMs ? `${base} · ${t('漂移 {drift}ms', { drift: driftMs })}` : base;
+}
+
+/**
+ * Latency pill ("58ms"), coloured by research 06 §3.4 tiers (<60 mint, <200 amber, else red).
+ * The pill shows the REAL WebSocket round trip (net.ping: the minimum of the last five measured samples, no
+ * compensation) so it is directly comparable with other servers' "WebSocket round trip". The tooltip adds the
+ * last raw sample and the client's drift estimate (`drift`) — an explanation, never an inflated number.
+ * @param {{ ms?: number|null, raw?: number|null, drift?: number|null, online?: boolean, class?: string }} props
+ */
+export function PingPill({ ms, raw, drift, online = true, class: cls }) {
   const ok = online && Number.isFinite(ms);
   const tier = !ok ? 'off' : ms < 60 ? 'low' : ms < 200 ? 'medium' : 'high';
-  const rawMs = Number.isFinite(raw) ? Math.round(raw) : null;
-  const title = !ok ? t('未连接')
-    : rawMs != null && rawMs !== Math.round(ms) ? t('当前延迟 {ms}ms（原始 {raw}ms）', { ms, raw: rawMs })
-    : t('当前延迟 {ms}ms', { ms });
+  const title = pingTitle({ ms, raw, drift, online });
   return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${title}>
     <${Icon} name=${ok ? 'signal' : 'wifiOff'} class="ping__icon" />
     <span class="ping__value">${ok ? Math.min(9999, Math.round(ms)) : '--'}</span><span class="ping__unit">ms</span>

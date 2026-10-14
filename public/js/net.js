@@ -50,10 +50,16 @@ export const LAG_PROBE_CATCHUP = 0.1;
 /** 单个 tick 的 drift 上限（ms）：后台标签页的定时器节流、几秒级冻结都不该把显示值一次打到 0。 */
 export const LAG_PROBE_MAX_DRIFT_MS = 2000;
 /**
- * 滞后补偿的绝对值下限（ms）：窗口刚建立、样本不足、或窗口内的原始样本全都很高时，
- * 显示值也不会被扣到 0（用户实测过「当前 0 ms（原始 200 ms）」——那不可能，物理链路上真实 RTT 有下限）。
+ * 旧「补偿口径」的绝对值下限（ms）：只用于 tooltip 里的补偿值（compensateRtt），
+ * 保证窗口刚建立、样本不足时那个解释值也不会被扣到 0。胶囊上的显示值已改为**真实** WS 往返，
+ * 不再经过补偿 —— 见 PING_DISPLAY_FLOOR_MS。
  */
 export const LAG_FLOOR_MS = 20;
+/**
+ * 胶囊显示值的下限（ms）：胶囊显示的是最近 5 次**实测** WS 往返的最小值（不做任何补偿），
+ * 这里只兜住取整 —— 环回或极小网络下 rtt 可能 < 1 ms，显示成 0 会让人以为读数坏了。
+ */
+export const PING_DISPLAY_FLOOR_MS = 1;
 export const BACKOFF = Object.freeze({ base: 500, factor: 2, max: 10000, jitter: 0.2 });
 const EMERGENCY_RETRY_MS = 120000;
 const EMERGENCY_RETRY_MIN_MS = 30000;
@@ -210,13 +216,15 @@ export class Net {
     this._wireDisabled = false; // Decoding failure downgrades this page to JSON on its next full resync.
     this.attempt = 0;          // consecutive failed connection attempts
     this.retryAt = 0;          // epoch ms of the next reconnect attempt (0 = none)
-    this.ping = null;          // displayed RTT in ms: the minimum of the last five compensated samples
-    this.pingRaw = null;       // the unfiltered round trip of the last probe (the ping tooltip shows it)
+    this.ping = null;          // displayed RTT in ms: the minimum of the last five REAL WebSocket round trips
+    this.pingRaw = null;       // the round trip of the last probe (the ping tooltip shows it beside `ping`)
+    this.pingDrift = null;     // main-thread drift estimate of the last probe (ms) — tooltip only, never subtracted
+    this.pingCompensated = null; // the old drift-compensated value (ms) — tooltip only (see _onPong)
     this._loopLag = 0;         // 主线程滞后估计（ms）：最近 10 秒里消息**典型**要排队多久（窗口中位数），见 _startLagProbe
     this._lagSamples = [];     // 滞后探针最近 10 秒的样本：[{ t, drift }]（t 为 clock()）
     this._lagExpected = null;  // 探针本次触发本应落在的时刻（clock()），见 _startLagProbe
     this._rawSamples = [];     // 最近 10 秒的原始往返样本：[{ t, rtt }]（t 为 clock()）——补偿的下限锚点（minRaw）
-    this._pingSamples = [];    // the last five compensated RTT samples the displayed ping is the minimum of
+    this._pingSamples = [];    // the last five REAL WS round trips the displayed ping is the minimum of
     this.lastError = null;     // last NetError relevant to the connection (e.g. hello rejected)
     this.clockOffset = 0;
     this.clockSynced = false;
@@ -276,8 +284,11 @@ export class Net {
   snapshot() {
     return {
       status: this.status, attempt: this.attempt, retryAt: this.retryAt, ping: this.ping,
-      // the unfiltered round trip of the last probe (the ping tooltip shows it beside `ping`)
+      // the round trip of the last probe (the ping tooltip shows it beside `ping`)
       pingRaw: this.pingRaw ?? null,
+      // tooltip-only context: this client's own drift estimate and the old compensated value (see _onPong)
+      pingDrift: this.pingDrift ?? null,
+      pingCompensated: this.pingCompensated ?? null,
       lastError: this.lastError ? { code: this.lastError.code, text: this.lastError.message } : null,
       playerId: this.playerId,
     };
@@ -789,15 +800,17 @@ export class Net {
     if (!Number.isFinite(c)) return;
     const rtt = now - c;
     if (!(rtt >= 0 && rtt < 60000)) return;
-    // pingRaw keeps the raw round trip of the last probe (the ping tooltip shows it beside the filtered value).
+    // pingRaw keeps the round trip of the last probe (the ping tooltip shows it beside the displayed value).
     this.pingRaw = Math.round(rtt);
-    // 浏览器主线程若被渲染/GC/素材解码占住，pong 的处理会被排到队尾，实测往返因此系统性偏大。
-    // 用独立的事件循环滞后探针（_startLagProbe：最近 10 秒 drift 的**中位数**）扣除这部分，得到接近真实网络的
-    // 延迟估计；再夹在同一观察窗内最小的原始往返（minRaw）与绝对值下限（LAG_FLOOR_MS）之上 —— 补偿再猛也不会
-    // 把显示值打到 0（用户实测过「当前 0 ms（原始 200 ms）」，那不可能）。最后取最近 5 次最小值抑制残差抖动。
-    const adjusted = compensateRtt(rtt, { lag: this._loopLag || 0, minRaw: this._minRawRtt(rtt), floor: LAG_FLOOR_MS });
-    this._pingSamples = [...this._pingSamples, adjusted].slice(-5);
-    this.ping = Math.min(...this._pingSamples);
+    // 显示口径 = **真实 WS 往返**（与其它服务器上的「WebSocket 往返响应」同一口径，可直接比较）：
+    // 取最近 5 次**实测**往返的最小值抑制抖动，不做任何补偿 —— 补偿值依赖本机主线程状态，天生偏高、不可比。
+    // 下限只做取整兜底（PING_DISPLAY_FLOOR_MS = 1）：环回/极小网络下 rtt 可能 < 1 ms，显示 0 会像读数坏了。
+    this._pingSamples = [...this._pingSamples, rtt].slice(-5);
+    this.ping = Math.max(PING_DISPLAY_FLOOR_MS, Math.round(Math.min(...this._pingSamples)));
+    // 浏览器主线程若被渲染/GC/素材解码占住，pong 的处理会被排到队尾，实测往返因此系统性偏大 ——
+    // 这部分（连同上一个口径算出的补偿值）**只放进 tooltip** 解释，不再改变胶囊上的数字。
+    this.pingDrift = Math.max(0, Math.round(this._loopLag || 0));
+    this.pingCompensated = compensateRtt(rtt, { lag: this._loopLag || 0, minRaw: this._minRawRtt(rtt), floor: LAG_FLOOR_MS });
     if (Number.isFinite(msg.s)) this._addClockSample(msg.s + rtt / 2 - now, rtt);
     this._emit('ping', this.ping);
     this._emit('status', this.snapshot());

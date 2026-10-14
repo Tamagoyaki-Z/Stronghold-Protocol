@@ -394,7 +394,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
       <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开 / 暂离')} class="gtop__exit tapx" />
       <div class="gtop__meta">
         <div class="gtop__net">
-          <${PingPill} ms=${conn?.ping} raw=${conn?.pingRaw} online=${conn?.status === 'online'} />
+          <${PingPill} ms=${conn?.ping} raw=${conn?.pingRaw} online=${conn?.status === 'online'} drift=${conn?.pingDrift} />
           <${SpectatorPill} spectators=${spectators} myId=${myId} isHost=${isHost} onRemove=${onRemoveSpectator} />
         </div>
         ${pub?.difficulty ? html`<${DifficultyTag} difficulty=${pub.difficulty} size="sm" />` : null}

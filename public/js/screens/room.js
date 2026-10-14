@@ -764,7 +764,7 @@ export function RoomScreen() {
             onClick=${toSpectate} aria-label=${t('切换到观战')}>${t('切换到观战')}<//>
         </span>` : null}
         <div class="room-ping">
-          <${PingPill} ms=${conn.ping} raw=${conn.pingRaw} online=${online} />
+          <${PingPill} ms=${conn.ping} raw=${conn.pingRaw} online=${online} drift=${conn.pingDrift} />
           <${MicroLabel}>${t('当前延迟')}<//>
         </div>
         <${Button} variant="secondary" size="sm" icon="chart" class="stats-entry" onClick=${openStats} title=${t('统计数据')} aria-label=${t('统计数据')}>${t('统计')}<//>

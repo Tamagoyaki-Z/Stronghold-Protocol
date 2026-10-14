@@ -277,7 +277,7 @@ export function TitleScreen() {
         <div class="title-conn">
           <span class="title-conn__status"><span class=${`status-dot ${dotClass}`}></span>
             <span>${STATUS_TEXT[conn.status] ? t(STATUS_TEXT[conn.status]) : conn.status}</span></span>
-          ${conn.status === 'online' ? html`<${PingPill} ms=${conn.ping} />` : null}
+          ${conn.status === 'online' ? html`<${PingPill} ms=${conn.ping} drift=${conn.pingDrift} />` : null}
           <${GuideButton} class="title-guide" label=${t('玩法说明')} />
           <${AnnouncementButton} class="title-announcements" />
           <button type="button" class="title-settings fsbtn tapx" aria-label=${t('设置')} title=${t('设置')}
