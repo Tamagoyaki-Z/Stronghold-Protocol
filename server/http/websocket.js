@@ -47,7 +47,17 @@ export function createSessionStack(opts, { data, log }) {
 export function attachWebSocket(server, { network, log }) {
   const compression = process.env.SP_WS_DEFLATE === '0' ? false : { ...WS_COMPRESSION };
   const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD, perMessageDeflate: compression, clientTracking: false });
-  wss.on('connection', (ws, req) => network.handleConnection(ws, req));
+  wss.on('connection', (ws, req) => {
+    // Nagle OFF on every accepted socket (TCP_NODELAY). Node's net.Socket defaults to Nagle ON, and this protocol is a
+    // trickle of tiny JSON frames: without this, a pong / room.state written while the previous segment is still
+    // unacknowledged waits for that ACK, and a Windows peer's delayed ACK adds its own ~200 ms on top — the client then
+    // measures a ~200 ms WebSocket round trip over a link whose ICMP is 44 ms, while the server's own handling is 1–2 ms.
+    // Nagle is a property of the sender's egress socket, so the node→client half is all that has to be set (the
+    // Caddy→node hop is a separate socket, not ours to tune). maxPayload / perMessageDeflate are untouched: Nagle
+    // buffers the wire, while compression only changes how a large message is packed inside one frame.
+    try { ws._socket?.setNoDelay?.(true); } catch (e) { log.debug?.('[ws] setNoDelay failed', e); }
+    network.handleConnection(ws, req);
+  });
   wss.on('error', (e) => log.error('[ws] server error', e));
 
   server.on('upgrade', (req, socket, head) => {
