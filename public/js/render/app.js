@@ -178,7 +178,10 @@ export async function createFieldView(host, options = {}) {
   signal?.throwIfAborted();
   const assets = resolveAssets(opts.assets);
   const data = makeData(opts.data);
-  const settings = { damageNumbers: true, officialDamageNumbers: false, ammoCount: false, quality: 'high', performanceMode: false, ...(opts.settings || {}) };
+  const settings = { damageNumbers: true, officialDamageNumbers: false, ammoCount: false, quality: 'high', ...(opts.settings || {}) };
+  // The fork's performance mode lives right after the literal so that upstream 0.2.6's ammo-count literal (pinned by
+  // test/ui/ammo-count.test.js) stays verbatim; it is on only when the caller asked for it, like the default before.
+  settings.performanceMode = settings.performanceMode === true;
   // 性能模式 (设置 → 性能模式, ui/settings.js): 一键降载。玩家自己的 画质 设置保持不动，只让渲染按轻量档跑：
   //   1) 不上 3D 棋盘 —— 复用「3D 素材/WebGL2 不可用 → 2D 棋盘」的既有分支（want3d 为假，three.js 与整个 3D
   //      素材包都不会被下载），不是删掉 3D 代码；显式的 `?board=3d`（开发用）仍然照办；

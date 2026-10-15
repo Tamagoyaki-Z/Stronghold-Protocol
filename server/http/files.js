@@ -388,27 +388,49 @@ export async function serveFile(req, res, absPath, stat, mountName, segments, qu
 }
 
 /**
- * One body in memory → the response (the served manifests, the fork's runtime cache and rendered index.html): its ETag
- * from `hash`, brotli or gzip when accepted (cached under `key` + `hash`), 304 on a matching If-None-Match, no ranges.
- * @param {{ body: Buffer, hash: string, type: string, cacheControl: string, key: string, cache: CompressCache }} o
+ * One body in memory → the response (the served manifests of assetViews.js, the fork's runtime cache, the
+ * runtime-versioned modules and the rendered index.html): its ETag from `hash` (a suffix per encoding), brotli or gzip
+ * when accepted (cached under `key` + `hash`), 304 on a matching If-None-Match, and — like serveFile — byte ranges when
+ * the client asks for one and the body goes out uncompressed (the fork's HTTP_CACHE.md contract: a `?rv=` runtime file
+ * keeps exact HEAD / 304 / Range semantics; upstream 0.2.6's version had dropped the ranges).
+ * @param {{ body: Buffer, hash: string, type: string, cacheControl: string, key: string, cache: CompressCache,
+ *           mtime?: Date | null, minBytes?: number }} o
  */
-export async function serveBuffer(req, res, { body, hash, type, cacheControl, key, cache }) {
-  const encoding = body.length >= GZIP_MIN_BYTES ? preferredEncoding(req.headers['accept-encoding']) : null;
+export async function serveBuffer(req, res, { body, hash, type, cacheControl, key, cache, mtime = null, minBytes = GZIP_MIN_BYTES }) {
+  const rangeHeader = req.headers.range;
+  const encoding = body.length >= minBytes && !rangeHeader ? preferredEncoding(req.headers['accept-encoding']) : null;
   const etag = `"${hash}${encoding === 'br' ? '-br' : encoding === 'gzip' ? '-gz' : ''}"`;
   const headers = { 'Content-Type': type, 'Cache-Control': cacheControl, ETag: etag, Vary: 'Accept-Encoding' };
-  const inm = req.headers['if-none-match'];
-  if (typeof inm === 'string' && (inm.trim() === '*' || inm.split(',').some((t) => stripWeak(t) === etag))) {
+  if (mtime) headers['Last-Modified'] = mtime.toUTCString();
+  if (encoding) headers['Content-Encoding'] = encoding;
+  if (isNotModified(req, etag, mtime)) {
     res.writeHead(304, headers);
     res.end();
     return;
   }
+  let status = 200;
   let out = body;
   if (encoding) {
     out = await cache.compressed(`${key}\0${hash}`, async () => body, encoding, path.extname(key).toLowerCase());
-    headers['Content-Encoding'] = encoding;
+  } else {
+    headers['Accept-Ranges'] = 'bytes';
+    if (rangeHeader && ifRangeMatches(req, etag, headers['Last-Modified'])) {
+      const range = parseRange(rangeHeader, body.length);
+      if (range === 'unsatisfiable') {
+        res.writeHead(416, { 'Content-Range': `bytes */${body.length}`, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': 0 });
+        res.end();
+        return;
+      }
+      if (range) {
+        status = 206;
+        out = body.subarray(range.start, range.end + 1);
+        headers['Content-Range'] = `bytes ${range.start}-${range.end}/${body.length}`;
+      }
+    }
   }
+  if (res.destroyed) return;
   headers['Content-Length'] = out.length;
-  res.writeHead(200, headers);
+  res.writeHead(status, headers);
   res.end(req.method === 'HEAD' ? undefined : out);
 }
 
