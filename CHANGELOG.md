@@ -1,3 +1,52 @@
+## 0.2.6-1015 — 2026-10-15
+
+上游 v0.2.6（2026-10-13）与本分支（0.2.5 + 110 个提交）合并后的发布形态；版本号 = 上游版本 + 服务器当天日期（`date +%m%d`）。
+
+### 合并上游 v0.2.6
+- 开服电脑的流量分层 0/1：静音时不下载背景音乐；WebSocket 消息启用 permessage-deflate（1 KB 起，服务端不保留上下文、2 KB 窗口，约 72 KB zlib 状态/连接）；素材地址带内容哈希并长期缓存（`.cache/asset-hashes.json`，`SP_ASSET_INDEX=0` 关闭）；HTTP 支持 brotli（文本类质量 5）；教程 / 图鉴页改用 WebP。
+- 新增按类别统计流量的计数器：`/healthz?traffic=1`（仅本机 / 内网客户端可读）显示 HTTP 分类字节与 WebSocket 报文字节。
+- 新增 `server/http/assetIndex.js`、`server/http/assetViews.js`、`shared/assetPaths.js`：`/data/assets.json`、`/data/local-assets.json` 下发的每个素材地址都带 `~<hash>` 内容哈希段，哈希正确即 `immutable` 一年，旧页面给的哈希回落到 `no-cache`。
+- 官方场景上的射击台 / 特制水上平台 / 封印的地面改由 `buildBoard` 重复到场景（#569），官方场景光照改回官方值；每回合开始重播干员入场动画；新增「弹药数量」选项（默认关闭）；修复单位多时模型被裁切、留下残影等 0.2.5 之后的反馈。
+
+### 本分支原有功能（合并后逐项保留）
+- 房容量 20 座（`/healthz` 的 `maxSeats=20`，`BASE_SEATS` 仍为 4）+ 观战席 10 个；卡池分组（`room.state.groups`，组内共享卡池 / 库存）；对局中并发 = 2。
+- LoL 式换位（`swapAsk` / `swapAnswer`）与「换到空位」（`room.moveToEmpty`，点空座位上的 ⇄ 直接换过去）；房主转让；匹配开关；局内聊天与对局前聊天列表 / 观战席罗列。
+- 皮肤全链路（选择器、战斗立绘 / 模型、金色 / 动态皮肤）；3D 多主题；性能模式（`PERF_DPR_CAP`、quality low）；漂移探针（延迟胶囊显示真实 WS 往返，补偿值降级到 tooltip）；乐观界面反馈（`optimisticFeedback`）。
+- 私有公告（`server/announcements.js` Markdown 存储、只读 HTTP 资源、紧急通知监视）；素材缓存 / 在线补齐（`server/assetCacheCatalog.js` + `server/http/assetCache.js`，含 IP 级限速、「素材缓存准入」与「紧急带宽保护」联动）；紧凑协议（位置数组协商，`SP_COMPACT_WIRE`）；首页版本目录（`?rv=` 校验，409 拒绝过期版本，`SP_HTTP_RUNTIME_CACHE`）；手动玩家选牌优先（跳过只能让给后面的手动玩家）。
+
+### 合并取舍（本次冲突）
+- `server/http/files.js` / `static.js` / `routes.js` / `index.js` / `websocket.js`：以上游 0.2.6 的结构为基准（内容哈希 ETag、`assetIndex` / `assetViews` / `traffic`、对象式 `serveBuffer(req, res, { body, hash, … })`），把本分支的 `runtimeCache`（`?rv=` 校验与 409）、`assetCache`、`bandwidthEmergency`、`announcements`、`serverSettings`、`trustProxy` 和 `SP_HTTP_BROTLI` / `SP_WS_DEFLATE` 应急开关重新接回；HTTP 压缩的并发上限（2）保留。`pickEncoding`（上游 API，其用例）与 `preferredEncoding`（本分支选择器，含应急开关与 identity 偏好）并存，服务端路径使用后者。
+- WebSocket：采用上游实测的 `WS_DEFLATE`（1 KB 起、服务端不保留上下文、2 KB 窗口），保留本分支的 `TCP_NODELAY`（关掉出口 socket 的 Nagle）；本分支早期的 `WS_COMPRESSION`（保留 32 KiB 服务端字典）被取代。
+- 选牌跳过：保留本分支语义（只能把机会让给后面尚未选牌的手动玩家；上游 0.2.6 的 e2e 用例在全真人房间下同样成立）。
+- 单位绘制：保留本分支的立绘锚点（`artX`，巨型单位对齐判定框中心），同时恢复上游的 `this.placed = true`（`app.js pieceScreenRect` 依赖它）。
+- `.bin` 素材：`server/assetCacheCatalog.js` 的 `ASSET_CACHE_MIME` 与 `shared/assetCache.js` 的 `TYPES` 两处都在（`assets:pack` 需要两边同时声明，否则先报 `unsupported resource type`、补完再报 `ASSET_CACHE_BAD_CATALOG`）。
+- 文档：`README` / `DESIGN` / `ARCHITECTURE` / `design/network.md` 两侧内容合并，版本行改为本构建版本。
+
+## 0.2.6 — 2026-10-13
+
+### 开服流量
+- 静音或把背景音乐音量调到 0 时不再下载背景音乐，重新打开声音后才下载当前该放的曲子（关音乐的玩家每局少下约 7–14 MB）。
+- 1 KB 以上的 WebSocket 消息用 permessage-deflate 压缩，一局单人对局的服务器消息实测从 173 KB 降到 60 KB。
+- 素材地址带内容哈希：浏览器把图片、模型和音频缓存一年，服务器更新、重新解压或 Docker 重建后只重新下载内容变了的文件；哈希存在 `.cache/asset-hashes.json`，`SP_ASSET_INDEX=0` 可关闭。
+- 支持 brotli 压缩（浏览器只在 HTTPS 页面和 localhost 上使用），`.skel` 和数据文件比 gzip 再小约四分之一。
+- 本地提取的「玩法说明」教程图另存 WebP（质量 90，25.6 MB → 4.2 MB），看说明时只预载下一页。
+- 流量统计：`/healthz?traffic=1` 显示服务器发出的各类流量（只对本机和局域网的访问显示）；「问题反馈」的诊断信息增加本页下载量。
+- 部署指南：固定访问地址、反代开 HTTP/2、Cloudflare 缓存规则。
+
+### 规则（按官方）
+- 维什戴尔的魂灵之影只召唤到场上的部署格（含队友的半场）：首领战中不会再落到整备区，单人首领战也不会落到空着的另一半场；范围内没有空位时不召唤（#557、PR #558，感谢 @IceCodeNew）。
+
+### 界面
+- 官方战场场景的光照改回提取出的官方值：直射光和烘焙光不再被压暗，场景不再明显偏暗（#549，PR #554，感谢 @xcdoge）。
+- 显示官方场景时，射击台、特制水上平台和封印的地面重新画出来：此前它们只画在被场景替换掉的棋盘层里，战场#03 蓝门旁的高台是平的、战场#05(上半) 的水上平台看起来像一片空水面，干员却站在抬高的位置上（#569，感谢 @A1muE4aY）。
+- 最后一个还没选策略的玩家不再看到可点的「跳过」按钮：已经选完的玩家仍显示在顺序里，但不算可以让过去的人（PR #546，感谢 @Xinglan233）。
+- 每回合开始时，自己棋盘上的干员按部署顺序一个接一个重播入场动画并播放落地音效（维护者按官方实机确认）；买到干员、干员上场或换到另一格时也会播放一次，同一次落地只响一声，音量跟随「音效」（PR #416，感谢 @Cromemadnd）。
+- 设置新增「弹药数量」，是可选项、默认关闭（官方界面没有这个数字）：打开后弹药类技能的黄色弹药条下方显示剩余弹药 / 总弹药数（如 13/14），格子密到画不出分隔线时也能读出（PR #552，感谢 @IceCodeNew）。
+- 场上单位多时（画面质量「高」下通常在第 7 回合以后）模型改用缓存画面绘制，此前野鬃待机时的旗帜、浊心斯卡蒂三技能飞起时的头部会被裁掉，超出的部分还会画进相邻单位的缓存，在隐现的枪口等处留下错位的残影。现在每个模型按它会播放的全部动作预留缓存大小，每个单位只画在自己的区域内；少数特别大的动作（多为部署时从天而降）播放期间直接绘制；单位在眩晕中才加载完成的模型也不再显示初始姿势（#542，感谢 @ImPQlc）。
+
+### 工具与开发
+- Windows 下场景素材测试的仓库路径不再重复盘符（PR #547，感谢 @Xinglan233）。
+
 ## 0.2.5 — 2026-10-12
 
 ### 新功能

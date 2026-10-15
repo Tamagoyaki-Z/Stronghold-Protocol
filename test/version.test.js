@@ -15,8 +15,9 @@ const pkg = JSON.parse(read('package.json'));
 const lock = JSON.parse(read('package-lock.json'));
 
 test('one release version: package.json, package-lock.json and APP_VERSION', () => {
-  // a release x.y.z, or x.y.z-dev on the public dev branch (the owner's decision of 2026-10-06)
-  assert.match(APP_VERSION, /^\d+\.\d+\.\d+(-dev)?$/);
+  // a release x.y.z, x.y.z-dev on the public dev branch (the owner's decision of 2026-10-06), or this fork's own
+  // x.y.z-<MMDD> merge build (the owner's decision of 2026-10-15)
+  assert.match(APP_VERSION, /^\d+\.\d+\.\d+(-dev|-\d{4})?$/);
   assert.equal(DEV_BUILD, APP_VERSION.endsWith('-dev'));
   assert.equal(pkg.version, APP_VERSION);
   assert.equal(lock.version, APP_VERSION);
@@ -27,7 +28,7 @@ test('one release version: package.json, package-lock.json and APP_VERSION', () 
 
 test('CHANGELOG.md opens with the release version, and the README links it', () => {
   const log = read('CHANGELOG.md');
-  const first = log.match(/^## (\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2})/m);
+  const first = log.match(/^## (\d+\.\d+\.\d+(?:-dev|-\d{4})?) — (\d{4}-\d{2}-\d{2})/m);
   assert.ok(first, 'a "## x.y.z — date" heading');
   if (DEV_BUILD) {
     // a dev build has no entry of its own yet: the newest one is the last release, older than the version in development

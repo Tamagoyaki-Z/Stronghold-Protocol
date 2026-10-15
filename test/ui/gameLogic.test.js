@@ -734,7 +734,7 @@ describe('keyboard & settings', () => {
     assert.equal(sanitizeSettings({ optimisticFeedback: false }).optimisticFeedback, false);
     for (const raw of ['false', 0, 'no', null, {}, 'off']) assert.equal(sanitizeSettings({ optimisticFeedback: raw }).optimisticFeedback, true, JSON.stringify(raw));
     assert.deepEqual(sanitizeSettings({ bgm: 3, sfx: -1, voice: 2, muted: 'yes', damageNumbers: false, quality: 'ultra' }),
-      { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', voiceOverrides: {}, resolution: 'auto', muted: false, damageNumbers: false, officialDamageNumbers: false, quality: 'high', performanceMode: false, optimisticFeedback: true, textSize: 'sm', keys: { ...DEFAULT_SETTINGS.keys } },
+      { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', voiceOverrides: {}, resolution: 'auto', muted: false, damageNumbers: false, officialDamageNumbers: false, ammoCount: false, quality: 'high', performanceMode: false, optimisticFeedback: true, textSize: 'sm', keys: { ...DEFAULT_SETTINGS.keys } },
       'a saved profile without `keys` (before 0.2.0) gets the default key map (test/ui/feedback5-hotkeys.test.js)');
     assert.equal(sanitizeSettings({ bgm: 0.5 }).voice, DEFAULT_SETTINGS.voice, 'a saved profile without `voice` gets the default');
     // 语音语言 (0.2.2): 中文 by default — a profile saved before it, or any other value, plays the Chinese dub
