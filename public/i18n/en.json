@@ -1478,5 +1478,8 @@
   "当前延迟 {ms}ms（原始 {raw}ms）": "Current latency {ms}ms (raw {raw}ms)",
   "组别": "Groups",
   "本组内共享卡池": "This group shares one card pool",
-  "超过 5 人时按座位分成若干组，同组玩家抽同一套卡池": "With more than 5 players the seats are split into groups; everyone in a group draws from the same card pool."
+  "超过 5 人时按座位分成若干组，同组玩家抽同一套卡池": "With more than 5 players the seats are split into groups; everyone in a group draws from the same card pool.",
+  "这台设备只能软件渲染 3D，为避免卡死已自动使用 2D 棋盘。可在设置中开启「性能模式」进一步减轻负担。": "This device can only render 3D in software, so the 2D board is used to avoid a freeze. Turn on Performance Mode in the settings to lighten the load further.",
+  "警告：此设备为软件渲染（弱显卡），强制开启 3D 棋盘可能导致黑屏卡死；请关闭 3D 或改用不带 ?board=3d 的链接。": "Warning: this device renders in software (weak GPU). Forcing the 3D board on may freeze the screen; turn 3D off or use a link without ?board=3d.",
+  "已按链接要求使用 2D 棋盘（不加载 3D），并已记住；想回到 3D 请打开带 ?board=3d 的链接。": "The 2D board is in use because the link asked for it (3D is not loaded), and the choice has been remembered; open a link with ?board=3d to go back to 3D."
 }

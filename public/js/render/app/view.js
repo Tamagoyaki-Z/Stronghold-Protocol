@@ -61,12 +61,64 @@ export const penShown = (vk, prevVk = null) => vk === 'pen' || prevVk === 'pen';
 /** Is the prep's leader on the boss field shown for a view kind (a flight shows it when either end is the boss-field prep)? */
 export const leaderShown = (vk, prevVk = null) => vk === 'bossPrep' || prevVk === 'bossPrep';
 
-/** '2d' | '3d' | 'auto' board preference: `?board=` in the page URL (dev), else the view option. */
-export function boardPreference(opt) {
-  let q = null;
-  try { q = new URLSearchParams(globalThis.location?.search || '').get('board'); } catch { /* no location */ }
-  const v = q || opt;
-  return v === '2d' || v === '3d' ? v : 'auto';
+/** localStorage key of the sticky remote 2D switch (`sp.pref.` + this, same namespace as the settings in store.js). */
+export const BOARD_PREF_KEY = 'board';
+
+/** The `?board=` value of a URL search string, or null. Shared with render/board3d/load.js `boardPreferenceFromURL`. */
+export function boardPreferenceFromURL(search) {
+  try { return new URLSearchParams(search || '').get('board'); } catch { return null; }
+}
+
+/**
+ * `'2d' | '3d' | 'auto'` board preference. Highest first:
+ *
+ *   1. `?board=`in the page URL — the immediate, no-tools-required override: `?board=2d` is the emergency switch a
+ *      player can be sent (or bookmark) when the 3D board freezes their machine (field report 2026-10: a black screen
+ *      with a dead cursor, every 3D (re)initialisation — prep, round change, scene switch). `?board=3d` re-enables 3D;
+ *      `?board=auto` forgets a stored choice. `?board=` is validated, so an unrelated value falls through.
+ *   2. the remembered choice of `?board=` (`localStorage` `sp.pref.board`) — what makes the emergency switch survive the
+ *      player walking into a room and getting a fresh URL. A preference the PLAYER cannot be reached with is not a
+ *      switch: 2D would otherwise come back the moment the query string is gone.
+ *   3. the caller's own `opt` (the view option; only the dev demo passes one).
+ *
+ * @param {string} [opt] the caller's own preference
+ * @param {'2d'|'3d'|'auto'} [stored] the remembered preference (default: read from localStorage, null-safe)
+ * @param {(v: '2d'|'3d'|'auto') => void} [remember] how to persist a `?board=` the URL carried (default: savePref)
+ * @returns {'2d'|'3d'|'auto'}
+ */
+export function boardPreference(opt, stored = storedBoardPreference(), remember = rememberBoardPreference) {
+  if (stored !== '2d' && stored !== '3d') stored = null;
+  let raw = null;
+  try { raw = boardPreferenceFromURL(globalThis.location?.search); } catch { /* no location */ }
+  if (raw === 'auto') { remember('auto'); return 'auto'; }
+  if (raw === '2d' || raw === '3d') { remember(raw); return raw; }
+  const v = opt;
+  return stored || (v === '2d' || v === '3d' ? v : 'auto');
+}
+
+/** The remembered `?board=` choice, or null (no localStorage / private mode / never set). */
+export function storedBoardPreference() {
+  try {
+    const v = globalThis.localStorage?.getItem('sp.pref.' + BOARD_PREF_KEY);
+    return v === '2d' || v === '3d' ? v : null;
+  } catch { return null; }
+}
+
+/**
+ * Remember (or forget, for `'auto'`) the `?board=` choice. Every failure — quota, private mode, no storage — is
+ * ignored: the switch of THIS page load still works, only its persistence is lost.
+ * @param {'2d'|'3d'|'auto'} v
+ */
+export function rememberBoardPreference(v) {
+  try {
+    if (v === '2d' || v === '3d') globalThis.localStorage?.setItem('sp.pref.' + BOARD_PREF_KEY, v);
+    else globalThis.localStorage?.removeItem('sp.pref.' + BOARD_PREF_KEY);
+  } catch { /* ignore */ }
+}
+
+/** `?board=2d` was applied to THIS page load (the notice in render/app.js `showBoardNotice` keys off it). */
+export function boardForcedByURL() {
+  try { return boardPreferenceFromURL(globalThis.location?.search) === '2d'; } catch { return false; }
 }
 
 /**

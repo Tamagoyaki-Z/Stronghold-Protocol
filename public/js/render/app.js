@@ -125,7 +125,7 @@ import { backdropTextures, shadowTexture, refreshTierChips, refreshDownLabels, s
 import { TILE_H, TIER_COLORS, COLORS } from './style.js';
 import { loadBoardArt } from './boardArt.js';
 import { ImpostorAtlas } from './impostor.js';
-import { loadThree, loadBoardPack, loadScenePack, webgl2Available, boardArtListed } from './board3d/load.js';
+import { loadThree, loadBoardPack, loadScenePack, webgl2Available, boardArtListed, board3dGate, board3dDeviceClass } from './board3d/load.js';
 import { themeForStage } from './board3d/theme.js';
 import { BoardScene } from './board3d/scene.js';
 import { unionAreas } from './board3d/layout.js';
@@ -136,16 +136,17 @@ import { promotionsOf } from './promote.js';
 import { ensurePixi } from './app/pixi.js';
 import { pieceDirOf, pickUnitOf } from './app/pick.js';
 import { CAMERA_MS, BOARD3D_STABLE_MS, BOARD3D_RETRY_MS, PEN_CAMERA_MS, RANGE_GROUPS, LEADER_HIT_STYLE, DRAG_HOLD_TILES, CHAIN_KINDS, DROP_PENDING_MS } from './app/tune.js';
-import { boardPreference, switchableBox, bandFor, fieldRows, boardArea, viewKind, penShown, leaderShown } from './app/view.js';
+import { boardPreference, boardForcedByURL, switchableBox, bandFor, fieldRows, boardArea, viewKind, penShown, leaderShown } from './app/view.js';
 import { renderInfo, FORCED_EXIT, showsDeathFx } from './app/info.js';
 import { resolveAssets, makeData, withTimeout, QUALITY_RES, BOARD_RES, releaseGl } from './app/host.js';
 import { t } from '../../../shared/i18n.js';
 import { skinFor } from '../ui/skins.js';
+import { toast } from '../ui/toasts.js';
 import { resolutionCap, boardResolutionCap } from '../ui/gameLogic/settings.js';
 
 export { ensurePixi } from './app/pixi.js';
 export { PEN_CAMERA_MS, LEADER_HIT_STYLE, DRAG_HOLD_TILES } from './app/tune.js';
-export { viewKind, boardArea, bandFor, fieldRows, penShown, leaderShown, boardPreference, switchableBox } from './app/view.js';
+export { viewKind, boardArea, bandFor, fieldRows, penShown, leaderShown, boardPreference, boardForcedByURL, boardPreferenceFromURL, BOARD_PREF_KEY, switchableBox } from './app/view.js';
 export { FORCED_EXIT, showsDeathFx, renderInfo } from './app/info.js';
 export { releaseGl } from './app/host.js';
 
@@ -174,9 +175,29 @@ export async function createFieldView(host, options = {}) {
   const PERF_DPR_CAP = 1;
   const perfMode = () => settings.performanceMode === true;
   const viewQuality = () => (perfMode() ? 'low' : settings.quality);
+  // 软件渲染 / 弱显卡（`gl2fast` = WebGL2 只在带「major performance caveat」时可用：SwiftShader、llvmpipe、
+  // 被驱动黑名单的核显）: 3D 棋盘在这类机器上让 CPU 硬跑一个全分辨率、带阴影、带抗锯齿的 three.js 场景，
+  // 玩家那边表现为「进休整期黑屏 + 鼠标不动，只能重启浏览器」，每一次 3D 场景（重）初始化都会触发（2026-10 现场反馈）。
+  // 设备档位定下后不可变，探针每页只跑一次（board3dDeviceClass）。
+  const device = board3dDeviceClass();
+  const weak3d = () => device.software;
   // the 3D board (three.js + the official art) loads in parallel with everything else
   const boardPref = boardPreference(opts.board);
-  const want3d = boardPref !== '2d' && (boardPref === '3d' || !perfMode()) && webgl2Available(boardPref === '3d');
+  // 判定链（高 → 低），见 board3d/load.js board3dGate：
+  //   ?board=2d（紧急 / 远程总开关，记住在 localStorage 的 sp.pref.board）> 软件渲染 ⇒ 2D >
+  //   性能模式 ⇒ 2D > ?board=3d（显式覆盖，软件渲染下照样开但会警告）> 默认 3D
+  // 老实现是 `webgl2Available(boardPref === '3d')`：`?board=3d` 传的 allowSlow=true 让软件渲染也过闸，这就是
+  // 黑屏根因。现在软件渲染在 auto 下永远拿不到 3D（不再下载 three.js 与整个 3D 素材包），只有显式 `?board=3d`
+  // 才走慢路径。`boardGate` 还是 `stats()` 与探针回读的同一份判定。
+  // `boardPreference()` 是 sp.pref.board 的唯一写入者（只在 URL 真的带了 `?board=` 时写）：玩家走进房间换了 URL
+  // 也不会把远程 2D 丢掉；本页不带参数时只读它、不重写它。
+  const boardGate = board3dGate(boardPref, { gl2fast: !device.software, perf: perfMode(), remote: boardForcedByURL() });
+  const want3d = boardGate.want;
+  // 像素比 / 特效档的兜底：软件渲染下即使开着 `?board=3d`（或未来别的入口）也压到最低档，与性能模式同口径 ——
+  // 玩家自己的 画质 / 分辨率 设置不动，只是 3D 那条路径按保守档跑（2D 回退时 canvas 像素比仍按玩家设置）。
+  const BOARD_WEAK_DPR_CAP = PERF_DPR_CAP;   // one conservative cap for both the 性能模式 and the software-render path
+  const boardDprCap = () => (perfMode() || weak3d() ? BOARD_WEAK_DPR_CAP : null);
+  const boardQuality = () => (perfMode() || weak3d() ? 'low' : settings.quality);
   // three.js (~2 MB) is fetched only when the local-art manifest lists the board atlas (in parallel with the art)
   const artListed = want3d ? boardArtListed(assets).catch(() => false) : Promise.resolve(false);
   // Board theme: which world this battlefield is dressed in. It must be decided HERE, before the pack is created — the
@@ -200,7 +221,9 @@ export async function createFieldView(host, options = {}) {
   // 分辨率: an explicit choice caps the pixel ratio on its own, independent of 画质 (which also decides the board's
   // expensive features) — 'auto' keeps the quality table, i.e. upstream behaviour. 性能模式 caps it at 1 (PERF_DPR_CAP).
   const dpr = () => Math.min(globalThis.devicePixelRatio || 1, perfMode() ? PERF_DPR_CAP : (resolutionCap(settings.resolution) ?? (QUALITY_RES[settings.quality] || 2)));
-  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, perfMode() ? PERF_DPR_CAP : (boardResolutionCap(settings.resolution) ?? (BOARD_RES[settings.quality] || 2)));
+  // The 3D board's own pixel ratio: 性能模式 or a software renderer caps it at 1 (a HiDPI software rasteriser drawing
+  // the board at 2× is the single most expensive thing this view can ask of it). The 2D board keeps the player's choice.
+  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, boardDprCap() ?? (boardResolutionCap(settings.resolution) ?? (BOARD_RES[settings.quality] || 2)));
   const s0 = size();
   // Construction is synchronous until the complete view can own cancellation. If setup throws,
   // dispose only the resources acquired by this attempt, never another view's host contents.
@@ -400,7 +423,7 @@ export async function createFieldView(host, options = {}) {
       host.insertBefore(c3, canvas);
       board3dCanvas = c3;
       const b = new BoardScene(THREE, pack, {
-        canvas: c3, antialias: viewQuality() !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: viewQuality() !== 'low',
+        canvas: c3, antialias: boardQuality() !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: boardQuality() !== 'low',
       });
       const sz = size();
       b.resize(sz.width, sz.height, boardDpr());
@@ -458,10 +481,36 @@ export async function createFieldView(host, options = {}) {
       if (!enable3d(recover.THREE, recover.pack)) scheduleRecover();
     }, delay);
   }
+  /**
+   * The one visible notice the 3D board can owe the player, shown once per view. 文案是 i18n 的 msgid（中文），
+   * 译文明细见 public/i18n/<lang>.json。
+   *
+   *   software        : auto 下调到 2D —— 告诉玩家为什么画面变朴素了（弱机自助修复的可见闭环）；
+   *   forced-software : `?board=3d` 在软件渲染上仍然按玩家要求开了 3D —— 明确的警告：这条链接正是黑屏的来源；
+   *   remote-2d       : 这次访问的 URL 带了 `?board=2d`（紧急开关）—— 说明 2D 是故意的，不是回退，并告诉玩家它已经记住；
+   *   其余情况（perf / 无 WebGL2 / 已记住的 2D）不弹提示：那些是玩家自己开的，或本来就没有 3D。
+   *
+   * `toast` 是 ui/toasts.js 的 imperative API（render/app.js → ui 的方向与 skins.js / gameLogic/settings.js 一致）。
+   */
+  function showBoardNotice() {
+    const notice = boardGate.notice;
+    if (!notice) return;
+    if (notice === 'software') {
+      toast(t('这台设备只能软件渲染 3D，为避免卡死已自动使用 2D 棋盘。可在设置中开启「性能模式」进一步减轻负担。'), 'warn');
+    } else if (notice === 'forced-software') {
+      toast(t('警告：此设备为软件渲染（弱显卡），强制开启 3D 棋盘可能导致黑屏卡死；请关闭 3D 或改用不带 ?board=3d 的链接。'), 'error', { ttl: 12000 });
+    } else {
+      toast(t('已按链接要求使用 2D 棋盘（不加载 3D），并已记住；想回到 3D 请打开带 ?board=3d 的链接。'), 'info', { ttl: 8000 });
+    }
+  }
   // Attach the board only after synchronous setup completes; enable3d also guards late arrivals.
   // `!perfMode()`: 玩家可能在 three.js / 素材包还在下载时打开性能模式（设置里一键切），那一次迟到的 3D 棋盘
   // 不能因为「创建时没开」就把 3D 装回来 —— 显式的 setBoardMode('3d')（开发用）不受这里影响。
-  const boardReady = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack && !perfMode() ? enable3d(THREE, pack) : false), () => false);
+  // `boardGate.want` 是同一个迟到的原因：软件渲染 / 远程 2D 下 threePromise / packPromise 都是 null，这条链
+  // 对它们没有任何副作用；无论哪种情况，提示只在这里发一次（不随 enable3d 的 retry 重复弹）。
+  const boardReady = Promise.all([threePromise, packPromise])
+    .then(([THREE, pack]) => (THREE && pack && !perfMode() ? enable3d(THREE, pack) : false), () => false)
+    .then((on) => { showBoardNotice(); return on; });
   let boardRetry = null;
   function retryBoard() {
     if (!want3d || destroyed || board3d || recover.off || recover.timer || boardRetry) return;
@@ -1960,6 +2009,9 @@ export async function createFieldView(host, options = {}) {
       recover.off = false; recover.tries = 0;
       if (board3d) return true;
       if (!webgl2Available(true)) return false; // an explicit request: a slow GPU is the caller's choice
+      // A software renderer is the same caller's choice here (an explicit setBoardMode('3d')), but it is warned like
+      // the `?board=3d` URL it mirrors: this is exactly the switch that reaches the black screen.
+      if (weak3d()) toast(t('警告：此设备为软件渲染（弱显卡），强制开启 3D 棋盘可能导致黑屏卡死；请关闭 3D 或改用不带 ?board=3d 的链接。'), 'error', { ttl: 12000 });
       const [THREE, pack] = await Promise.all([loadThree(), loadBoardPack(assets, boardThemeGroup)]);
       return enable3d(THREE, pack);
     },
@@ -1995,6 +2047,9 @@ export async function createFieldView(host, options = {}) {
       return {
         fps: Math.round(fps * 10) / 10, frameMs: Math.round(frameMs * 100) / 100, cpuMs: Math.round(cpuMs * 100) / 100, renderMs: Math.round(renderMs * 100) / 100, mode, units: views.size, impostor: impInterval, impostorAtlas: { ...impostors.stats }, boardArt: !!tiles.atlas.art,
         board3d: board3d ? { on: true, ...board3d.stats(), losses: recover.count } : { on: false, error: board3dError, recovering: !!recover.timer, losses: recover.count },
+        // 3D 棋盘的判定现场（软件渲染 / ?board=3d / ?board=2d / 性能模式 各自怎么投的票），供「设置 → 问题反馈」与现场核对；
+        // 与 `__SP_BOARD3D_PROBE__().gate` 是同一个判定
+        boardGate: { ...boardGate, pref: boardPref, software: weak3d(), dpr: boardDpr(), quality: boardQuality() },
         pen: penViews.size, prepField: prepXf.kind === 'bossPrep' ? prepXf.side : null, lod: loadLevel, culled: culledCount,
         // 性能模式: 供「设置 → 问题反馈」的诊断与现场核对（开着时 board3d.on 必为 false、渲染档位为 'low'）
         performance: { on: perfMode(), dpr: dpr(), quality: viewQuality() },

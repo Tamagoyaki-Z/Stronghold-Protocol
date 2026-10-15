@@ -57,18 +57,102 @@ export function webgl2Available(allowSlow = false) {
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+let deviceClassCache = null;
+
+/**
+ * What this browser can actually render with — the once-per-page device class behind the 3D board's gate.
+ *
+ * `software`: WebGL2 exists only WITH the "major performance caveat" (SwiftShader / llvmpipe / a blocklisted GPU).
+ * Such a renderer still answers `webgl2Available(true)`, which is why the forced `?board=3d` switched the 3D board on
+ * for it — a native-resolution, shadowed, antialiased three.js scene the CPU has to rasterise, the load that left
+ * weak machines on a black screen with a dead cursor (field report, 2026-10). The probe is one throwaway canvas +
+ * context per page (≈ one draw) and its result is cached: `software` cannot change, and the gate asks on every view.
+ *
+ * `getContext` is called as a method of its own canvas (a bare call throws Illegal invocation in Chrome).
+ *
+ * @returns {{ software: boolean, lazy: boolean }} `lazy` = no WebGL2 at all (also the answer in Node, with no document)
+ */
+export function board3dDeviceClass() {
+  const lazy = { software: false, lazy: true };
+  if (deviceClassCache) return deviceClassCache;
+  try {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return (deviceClassCache = lazy);
+    const c = document.createElement('canvas');
+    const get = c.getContext;
+    if (typeof get !== 'function') return (deviceClassCache = lazy);
+    const ctx = (opts) => get.call(c, 'webgl2', opts);
+    const fast = !!ctx({ failIfMajorPerformanceCaveat: true });
+    const any = fast || !!ctx({});
+    if (any) { const lose = any.getExtension?.('WEBGL_lose_context'); if (lose) lose.loseContext(); }
+    return (deviceClassCache = { software: !fast && any, lazy: !any });
+  } catch { return (deviceClassCache = lazy); }
+}
+
+/** Forget the cached device class (tests; on a real page it is a property of the page, not of the view). */
+export function resetBoard3dDeviceClass() { deviceClassCache = null; }
+
+/** `?board=` of a URL search string — null when absent or unparsable (`render/app/view.js boardPreferenceFromURL`). */
+export function boardPreferenceFromURL(search) {
+  try { return new URLSearchParams(search || '').get('board'); } catch { return null; }
+}
+
+/**
+ * The 3D board's gate: is the 3D board wanted, and what (if anything) must the player be told about it?
+ *
+ * Precedence, highest first — the order the settings and the URL have always had:
+ *   1. `pref` (`?board=3d|2d`, then the remembered choice, then the view option; `app/view.js boardPreference`) —
+ *      `2d` wins over everything: that is the emergency switch, and it is also the sticky remote kill switch;
+ *   2. no WebGL2 at all — always 2D, silently (three r163+ needs WebGL2; nothing was ever possible);
+ *   3. WebGL2 as the FAST renderer asks for it (`gl2fast` = `webgl2Available(false)`, i.e. failIfMajorPerformanceCaveat)
+ *      — false ⇒ software / blocklisted ⇒ 2D, whatever 画质 says, and the player is told (that is the fix);
+ *   4. 性能模式 (`perf`) — on ⇒ 2D, silently (the player turned it on);
+ *   5. `pref === '3d'`: the explicit override ("I know my machine" / dev). It wins over 3 and 4 because the slow path
+ *      was asked for on purpose, but a software renderer still gets a `forced-software` warning, so the player is told
+ *      what the override costs on this machine instead of meeting the black screen unexplained.
+ *
+ * The rule this adds is 5's caveat, not its refusal: a software renderer can no longer reach the 3D board by accident
+ * (no `?board=3d`), while the override stays available to whoever asks for it.
+ *
+ * @param {'2d'|'3d'|'auto'} pref
+ * @param {{ gl2?: boolean, gl2fast?: boolean, perf?: boolean, remote?: boolean }|null} [probe] defaults to the live
+ *   `board3dDeviceClass()` (which answers both `gl2` and `gl2fast` in one probe)
+ * @returns {{ want: boolean, pref: '2d'|'3d'|'auto', software: boolean, reason: '2d'|'nogl2'|'perf'|'software'|'forced-software'|'ok', notice: 'software'|'forced-software'|'remote-2d'|null }}
+ */
+export function board3dGate(pref = 'auto', probe = null) {
+  const cls = board3dDeviceClass();
+  const software = probe ? probe.gl2fast === false : cls.software;
+  const gl2 = probe ? probe.gl2 !== false : !cls.lazy;
+  const perf = probe ? probe.perf === true : false;
+  if (pref === '2d') {
+    // A `?board=2d` the URL itself carried is a deliberate act: say so once, so the 2D board does not read as a regression.
+    return { want: false, pref, software, reason: '2d', notice: probe?.remote ? 'remote-2d' : null };
+  }
+  if (!gl2) return { want: false, pref, software, reason: 'nogl2', notice: null };
+  if (pref === '3d') {
+    return software
+      ? { want: true, pref, software, reason: 'forced-software', notice: 'forced-software' }
+      : { want: true, pref, software, reason: 'ok', notice: null };
+  }
+  if (software) return { want: false, pref, software, reason: 'software', notice: 'software' };
+  if (perf) return { want: false, pref, software, reason: 'perf', notice: null };
+  return { want: true, pref, software, reason: 'ok', notice: null };
+}
+
 /**
  * Why the 3D board is or is not used, readable at runtime (dev / field diagnosis).
  *
- * `render/app.js` decides with two values — `webgl2Available(allowSlow)` and `boardArtListed(assets)` — and when the
- * answer is "2D" there is otherwise nothing to read: `stats().board3d` only says `{ on: false }` without saying which
- * of the two said no. The three booleans here are the whole decision, computed on demand (never at boot).
+ * `render/app.js` decides with the gate above (`board3dGate(boardPreference(opts.board))`) and `boardArtListed`, and
+ * when the answer is "2D" there is otherwise nothing to read: `stats().board3d` only says `{ on: false }` without
+ * saying which input said no. The booleans here are that whole decision, computed on demand (never at boot).
  *
  *   await __SP_BOARD3D_PROBE__() → {
- *     gl2:     WebGL2 ignoring the "major performance caveat" flag (a software renderer still reports true here),
- *     gl2fast: WebGL2 as the DEFAULT `auto` mode asks for it (software / blocklisted ⇒ false → 2D),
- *     listed:  the local-art manifest lists map/autochess/TX_autochessi_D (i.e. the board art is installed),
- *     url:     the URL that listing resolves to (null when not installed),
+ *     gl2:      WebGL2 ignoring the "major performance caveat" flag (a software renderer still reports true here),
+ *     gl2fast:  WebGL2 as the DEFAULT `auto` mode asks for it (software / blocklisted ⇒ false → 2D),
+ *     software: gl2fast is false — the device class that disables 3D, and that is warned when `?board=3d` overrides it,
+ *     stored:   the remembered `?board=` choice (the sticky remote kill switch), or null,
+ *     listed:   the local-art manifest lists map/autochess/TX_autochessi_D (i.e. the board art is installed),
+ *     url:      the URL that listing resolves to (null when not installed),
+ *     gate:     `board3dGate(pref)` of the current page URL — the very object render/app.js acts on,
  *   }
  *
  * In a browser console on the running game: `await __SP_BOARD3D_PROBE__()`.
@@ -79,7 +163,14 @@ export async function board3dProbe(assets) {
     listed = await boardArtListed(assets);
     url = assets && typeof assets.localUrl === 'function' ? assets.localUrl(...PACK_IMAGES.D) : null;
   } catch { /* reported as not listed */ }
-  return { gl2: webgl2Available(true), gl2fast: webgl2Available(false), listed, url };
+  let stored = null;
+  try { stored = globalThis.localStorage?.getItem('sp.pref.board') || null; } catch { /* no storage */ }
+  const raw = boardPreferenceFromURL(globalThis.location?.search);
+  const pref = raw === '2d' || raw === '3d' ? raw : (stored === '2d' || stored === '3d' ? stored : 'auto');
+  return {
+    gl2: webgl2Available(true), gl2fast: webgl2Available(false), software: board3dDeviceClass().software,
+    stored, listed, url, game: board3dGate(pref, { gl2fast: !board3dDeviceClass().software, perf: false, remote: raw === '2d' }),
+  };
 }
 if (typeof globalThis !== 'undefined') globalThis.__SP_BOARD3D_PROBE__ = board3dProbe;
 
