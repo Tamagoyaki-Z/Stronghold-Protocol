@@ -62,7 +62,7 @@ test('equipment stock scales with its group: full for three/four, x1.25 for five
   }
 });
 
-test('exhausting one equipment group gates only its shop, reward, golden upgrade and effect rolls', () => {
+test('exhausting one equipment group gates its fresh rolls and grants; a displayed card or reward overdraws and records the debt', () => {
   const h = makeMatch({ humans: 7, seed: 11, fake: true, data: stockData() }).start().toPrep(1);
   const m = h.m, a = h.ps('p_0'), teammate = h.ps('p_1'), b = h.ps('p_4');
   try {
@@ -76,10 +76,15 @@ test('exhausting one equipment group gates only its shop, reward, golden upgrade
     assert.ok(x && y);
     assert.equal(m.itemPoolFor(a).left(PACK), 0);
     assert.equal(m.itemPoolFor(b).left(PACK), 2);
-    assert.equal(a.buy(0).error, 'SOLD_OUT');
-    assert.equal(a.funds, 20);
-    assert.equal(a.pickReward(0).error, 'SOLD_OUT');
-    assert.equal(a.offers.length, 1);
+    // An already-displayed card, and an already-displayed item reward, are never stock-gated: they overdraw and the
+    // group records the shortfall as debt (upstream #498/#624, inherited by the merge commit d80bb50c). The fork's
+    // pre-merge expectation here was SOLD_OUT, which now means only "this slot is already sold".
+    assert.deepEqual(a.buy(0), { ok: true });
+    assert.equal(a.funds, 19, 'a displayed purchase is charged');
+    assert.equal(m.itemPoolFor(a).debtOf(PACK), 1, 'the displayed purchase overdraws one copy of its group stock');
+    assert.deepEqual(a.pickReward(0), { ok: true });
+    assert.equal(a.offers.length, 0, 'the pick consumed the offer');
+    assert.equal(m.itemPoolFor(a).debtOf(PACK), 2, 'the displayed reward overdraws too');
     assert.equal(a.upgradeItem(x), false);
     assert.equal(a._rollItemSlot(), null);
     assert.equal(b._rollItemSlot().id, PACK);
@@ -90,10 +95,19 @@ test('exhausting one equipment group gates only its shop, reward, golden upgrade
     assert.deepEqual(cb.rollPool('test_group_item'), { kind: 'item', id: PACK });
     assert.ok(b.pickReward(0).ok);
     assert.equal(m.itemPoolFor(b).left(PACK), 1);
-    assert.ok(a.destroy(x.uid).ok);
-    assert.equal(m.itemPoolFor(a).left(PACK), 1);
+    // A fresh (not displayed) grant stays gated while the group is overdrawn, and the gate reopens as the overage
+    // actually leaves the match: destroying the two overdrawn copies repays the debt and frees the teammate's copy.
+    // (x itself is gone: buying the displayed card merged a's two normal copies into the golden item.)
+    assert.equal(a.acquireItem(PACK), null, 'a fresh grant never overdraws');
+    const overdrawn = [...a.hand, ...a.temp].filter((p) => p && p.kind === 'item' && m.gd.baseIdOf(p.id) === PACK);
+    assert.equal(overdrawn.length, 2, 'the reward copy and the golden its two purchased normals merged into');
+    assert.ok(a.destroy(overdrawn.find((p) => p.id === PACK).uid).ok);
+    assert.equal(m.itemPoolFor(a).debtOf(PACK), 1, 'one copy left play: one debt repaid');
+    assert.ok(a.destroy(overdrawn.find((p) => p.id !== PACK).uid).ok);
+    assert.equal(m.itemPoolFor(a).debtOf(PACK), 0);
+    assert.equal(m.itemPoolFor(a).left(PACK), 1, 'the teammate still holds the group\'s other copy');
     assert.equal(m.itemPoolFor(b).left(PACK), 1);
-    assert.ok(a.pickReward(0).ok);
+    assert.ok(a.acquireItem(PACK), 'the freed copy is available again');
     assert.equal(m.itemPoolFor(a).left(PACK), 0);
     checkInvariants(m);
   } finally { m.dispose(); }

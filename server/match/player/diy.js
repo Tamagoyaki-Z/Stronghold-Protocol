@@ -17,8 +17,12 @@
 //   * the per-player stock (initDiyStock, called by the match once its bans are drawn): each slotted DIY piece has copies
 //     of its own — the tier's pool copies, 8 at tier 5 and 5 at tier 6 [ASSUMED: research 0.2.0 §2.5, the excel has no
 //     stock field] — drawn by this player only; it never enters the shared pool (PR #71's shared shop was the mistake to
-//     avoid); in co-op its copies double like the shared pool's (gamedata.js poolCopies × coopPoolMultiplier: 16 / 10 —
-//     the maintainer's decision of 2026-10-15, GitHub #650, DESIGN §32.14.31). A piece all of whose bonds are switched
+//     avoid). Its copies take the SAME share of the four-person baseline as the shared pool this player draws from:
+//     gamedata.poolCopies (gamedata.js, the co-op multiplier of #650) scaled by the player's own fixed pool group
+//     (pool.js SharedPool.scale = poolGroupScale, rounded by shared/playerCapacity.js scaleCopies) — solo 8 / 5, a
+//     three-person group 12 / 8, a four-person group 16 / 10, a five-person group 20 / 13. Plan C, the maintainers'
+//     decision of 2026-10-16, which keeps upstream #650's "the private multiplier equals the shared one of the same
+//     tier" true. A piece all of whose bonds are switched
 //     off this match (本局禁用: the drawn bans and the mode's static list)
 //     gets no stock and so leaves the shop, like a preset chess whose bonds are all off (PRTS 卫戍协议：盟约 "禁用盟约有可能
 //     影响自选的支援干员"); 协防 (emptyShip) is never banned, so a prototype always stays. poolOf(baseId) routes every copy
@@ -44,6 +48,7 @@ import { KITTED_CHARS } from '../../sim/content/kits/index.js';
 import { checkDiyPicks } from '../../../shared/protocol.js';
 import { diyRecord, diySlot, diyTokenOwner } from '../../../shared/diy.js';
 import { atPotential } from '../../../shared/potential.js';
+import { scaleCopies } from '../../../shared/playerCapacity.js';
 
 const posIntOr = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -200,7 +205,12 @@ export class PlayerDiy {
       if (!rec || !slot) continue;
       const bonds = Array.isArray(rec.bonds) ? rec.bonds : [];
       if (bonds.length > 0 && bonds.every((b) => off.has(b))) { banned.push(slotId); continue; }
-      const cap = gd.poolCopies(slotId);
+      // The same group share as the shared pool (plan C, 2026-10-16): gd.poolCopies already carries the co-op
+      // multiplier (#650); this.pool is the player's own fixed group's SharedPool, whose `scale` is poolGroupScale
+      // of the group's size (pool.js createPoolGroups). The rounding is shared/playerCapacity.js scaleCopies — the
+      // very rule (and tier III floor) that group's shared pool uses, so the two factors cannot drift apart.
+      const scale = Number.isFinite(this.pool?.scale) && this.pool.scale > 0 ? this.pool.scale : 1;
+      const cap = scaleCopies(gd.poolCopies(slotId), scale, gd.tierOf(slotId));
       if (!(cap > 0)) continue;
       stock.entries.set(slotId, { cap, left: cap, tier: gd.tierOf(slotId), shopLevel: slot.shopLevel });
     }
