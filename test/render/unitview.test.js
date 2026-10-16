@@ -890,3 +890,34 @@ describe('GitHub #648: the Hidden Core 假想敌：管 (enemy_9021_acduml_2)', (
     assert.ok(Math.abs((h.hpFill.position.x - b.hpFill.position.x) - dx) < 1, `HP bar moved by ${h.hpFill.position.x - b.hpFill.position.x} px (1.4 tiles ≈ ${dx})`);
   });
 });
+
+describe('干员皮肤 (docs/SKINS.md): the battle model lookup carries the unit\'s skin', () => {
+  /**
+   * assets.js spineEntry reads `opts.skin` to pick the skin's own Front/Back model; a view that drops the flag falls
+   * back to the operator's default model. `_loadSpine` passed it inline until upstream's 0.3.0 refactor moved the
+   * lookup into `_modelEntry`, and the merge kept the refactor without the flag — battle and prep models went plain
+   * while avatars and cards (which never go through here) kept the skin.
+   */
+  function recording() {
+    const calls = [];
+    const base = store({ spine: true });
+    return { calls, assets: { ...base, spineEntry: (id, o) => { calls.push({ id, ...(o || {}) }); return base.spineEntry(id, o); } } };
+  }
+
+  test('a unit wearing a skin asks the manifest for that skin', () => {
+    const { calls, assets } = recording();
+    view({ defId: 'char_x', skin: 'char_x@skin#1' }, undefined, assets);
+    const call = calls.find((c) => c.back === false) || calls[0];
+    assert.ok(call, 'the view looks its model up on construction');
+    assert.equal(call.id, 'char_x');
+    assert.equal(call.skin, 'char_x@skin#1', 'spineEntry must receive opts.skin');
+  });
+
+  test('a unit wearing none sends none — an install without skins keeps the plain model', () => {
+    const { calls, assets } = recording();
+    view({ defId: 'char_x' }, undefined, assets);
+    const call = calls.find((c) => c.back === false) || calls[0];
+    assert.ok(call);
+    assert.ok(!call.skin, 'no skin is forwarded');
+  });
+});

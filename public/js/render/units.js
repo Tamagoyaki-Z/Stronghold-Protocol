@@ -852,7 +852,7 @@ export class UnitView {
   _modelEntry(back = this._wantsBack()) {
     const a = this.ctx.assets;
     const id = this.info.spine || this.info.defId;
-    return a && a.spineEntry && id ? a.spineEntry(id, { back }) || null : null;
+    return a && a.spineEntry && id ? a.spineEntry(id, { back, skin: this.info.skin }) || null : null;
   }
 
   /** @param {boolean} [retry] load again even after a remembered failure (assets.js acquire `{ retry }`) */
