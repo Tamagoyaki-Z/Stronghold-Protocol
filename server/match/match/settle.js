@@ -9,6 +9,7 @@ import { buildResult } from '../results.js';
 import { FLOW_TICKER_PRIORITY, DELAYS } from './common.js';
 import { msg } from '../../../shared/i18n.js';
 import { onSettle, resetRoundCounters } from '../botEmotes.js';
+import { creditedKillsOf } from '../../sim/spec.js';
 
 export class MatchSettle {
   settle(plan, uniteResult) {
@@ -49,11 +50,16 @@ export class MatchSettle {
       if (r.perfect !== false && counted === 0) ps.stats.perfectRounds++;
       // bounty coins (own battle + unite kills) are credited to the next prep
       let coins = Math.max(0, Math.trunc(Number(r.coins) || 0));
+      // the fork's multiple 鑱旈槻 waves: sum the credited kills over every unite result this round ran (upstream's
+      // single-result form was `creditedKillsOf(up)` with `up` the one result's per-player entry)
+      let uniteCredited = 0;
       for (const up of uniteResults.map((result) => result.perPlayer && result.perPlayer[ps.playerId]).filter(Boolean)) {
         coins += Math.max(0, Math.trunc(Number(up.coins) || 0));
         ps.stats.dmgDealt += Number(up.damageDealt) || 0;
         ps.stats.kills += Number(up.killed) || 0;
+        uniteCredited += creditedKillsOf(up);
       }
+      ps.creditedKills += creditedKillsOf(r) + uniteCredited;
       // perfect-payout bounties (战术特训): own phase perfect
       for (const b of ps.bounties) if (b.card.payout === 'perfect' && counted === 0 && r.perfect !== false) coins += b.card.coin;
       if (coins > 0) { ps.pendingFunds += coins; ps.stats.fundsGained += coins; }

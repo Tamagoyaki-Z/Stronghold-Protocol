@@ -593,3 +593,8 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
 }
 
 export const assetCache = createAssetCacheManager();
+
+// The upstream 0.3.0 imported-art cache helpers live in ./importCache.js (they are an unrelated concern: Cache
+// Storage for an imported asset pack). Re-exported here so upstream's importers (assetPack.js, assetDownload.js,
+// ui/assetImport.js, main.js, test/package.test.js, test/ui/asset-import.test.js) keep resolving unchanged.
+export * from './importCache.js';
