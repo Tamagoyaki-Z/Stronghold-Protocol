@@ -201,7 +201,7 @@ export async function createFieldView(host, options = {}) {
   settings.performanceMode = settings.performanceMode === true;
   // 性能模式 (设置 → 性能模式, ui/settings.js): 一键降载。玩家自己的 画质 设置保持不动，只让渲染按轻量档跑：
   //   1) 不上 3D 棋盘 —— 复用「3D 素材/WebGL2 不可用 → 2D 棋盘」的既有分支（want3d 为假，three.js 与整个 3D
-  //      素材包都不会被下载），不是删掉 3D 代码；显式的 `?board=3d`（开发用）仍然照办；
+  //      素材包都不会被下载），不是删掉 3D 代码；显式的 `?board=3d`（开发用）在真显卡上仍然照办；
   //   2) 像素比压到 1（PERF_DPR_CAP，手机 2×/3× 屏上省下的填充率最多）；
   //   3) 特效/阴影/抗锯齿/冒名顶替走 quality 'low' 档（fx 等子系统读的是 ctx.settings 的活值，改完立刻生效）。
   const PERF_DPR_CAP = 1;
@@ -216,16 +216,17 @@ export async function createFieldView(host, options = {}) {
   // the 3D board (three.js + the official art) loads in parallel with everything else
   const boardPref = boardPreference(opts.board);
   // 判定链（高 → 低），见 board3d/load.js board3dGate：
-  //   ?board=2d（紧急 / 远程总开关，记住在 localStorage 的 sp.pref.board）> 软件渲染 ⇒ 2D >
-  //   性能模式 ⇒ 2D > ?board=3d（显式覆盖，软件渲染下照样开但会警告）> 默认 3D
+  //   ?board=2d（紧急 / 远程总开关，记住在 localStorage 的 sp.pref.board）> 软件渲染 ⇒ 2D（`?board=3d` 也覆盖不了）
+  //   > ?board=3d（显式覆盖，真显卡上照开）> 性能模式 ⇒ 2D > 默认 3D
   // 老实现是 `webgl2Available(boardPref === '3d')`：`?board=3d` 传的 allowSlow=true 让软件渲染也过闸，这就是
-  // 黑屏根因。现在软件渲染在 auto 下永远拿不到 3D（不再下载 three.js 与整个 3D 素材包），只有显式 `?board=3d`
-  // 才走慢路径。`boardGate` 还是 `stats()` 与探针回读的同一份判定。
+  // 黑屏根因。0.2.6 只堵住了 auto（`?board=3d` 警告后照开），弱机拿到那条链接还是黑屏；现在软件渲染永远拿不到
+  // 3D（不再下载 three.js 与整个 3D 素材包）——连 `?board=3d` 也不行。开发者要看慢场景走 setBoardMode('3d')。
+  // `boardGate` 还是 `stats()` 与探针回读的同一份判定。
   // `boardPreference()` 是 sp.pref.board 的唯一写入者（只在 URL 真的带了 `?board=` 时写）：玩家走进房间换了 URL
   // 也不会把远程 2D 丢掉；本页不带参数时只读它、不重写它。
   const boardGate = board3dGate(boardPref, { gl2fast: !device.software, perf: perfMode(), remote: boardForcedByURL() });
   const want3d = boardGate.want;
-  // 像素比 / 特效档的兜底：软件渲染下即使开着 `?board=3d`（或未来别的入口）也压到最低档，与性能模式同口径 ——
+  // 像素比 / 特效档的兜底：软件渲染下经开发入口（setBoardMode('3d')）开出来的 3D 也压到最低档，与性能模式同口径 ——
   // 玩家自己的 画质 / 分辨率 设置不动，只是 3D 那条路径按保守档跑（2D 回退时 canvas 像素比仍按玩家设置）。
   const BOARD_WEAK_DPR_CAP = PERF_DPR_CAP;   // one conservative cap for both the 性能模式 and the software-render path
   const boardDprCap = () => (perfMode() || weak3d() ? BOARD_WEAK_DPR_CAP : null);
@@ -563,8 +564,8 @@ export async function createFieldView(host, options = {}) {
    * The one visible notice the 3D board can owe the player, shown once per view. 文案是 i18n 的 msgid（中文），
    * 译文明细见 public/i18n/<lang>.json。
    *
-   *   software        : auto 下调到 2D —— 告诉玩家为什么画面变朴素了（弱机自助修复的可见闭环）；
-   *   forced-software : `?board=3d` 在软件渲染上仍然按玩家要求开了 3D —— 明确的警告：这条链接正是黑屏的来源；
+   *   software        : 软件渲染 ⇒ 2D —— 告诉玩家为什么画面变朴素了（弱机自助修复的可见闭环）；`?board=3d`
+   *                     想覆盖它走的也是这一条（对玩家都是「这台机器上没有 3D」，不需要第二条文案）；
    *   remote-2d       : 这次访问的 URL 带了 `?board=2d`（紧急开关）—— 说明 2D 是故意的，不是回退，并告诉玩家它已经记住；
    *   其余情况（perf / 无 WebGL2 / 已记住的 2D）不弹提示：那些是玩家自己开的，或本来就没有 3D。
    *
@@ -575,8 +576,6 @@ export async function createFieldView(host, options = {}) {
     if (!notice) return;
     if (notice === 'software') {
       toast(t('这台设备只能软件渲染 3D，为避免卡死已自动使用 2D 棋盘。可在设置中开启「性能模式」进一步减轻负担。'), 'warn');
-    } else if (notice === 'forced-software') {
-      toast(t('警告：此设备为软件渲染（弱显卡），强制开启 3D 棋盘可能导致黑屏卡死；请关闭 3D 或改用不带 ?board=3d 的链接。'), 'error', { ttl: 12000 });
     } else {
       toast(t('已按链接要求使用 2D 棋盘（不加载 3D），并已记住；想回到 3D 请打开带 ?board=3d 的链接。'), 'info', { ttl: 8000 });
     }
@@ -2236,8 +2235,9 @@ export async function createFieldView(host, options = {}) {
       recover.off = false; recover.tries = 0;
       if (board3d) return true;
       if (!webgl2Available(true)) return false; // an explicit request: a slow GPU is the caller's choice
-      // A software renderer is the same caller's choice here (an explicit setBoardMode('3d')), but it is warned like
-      // the `?board=3d` URL it mirrors: this is exactly the switch that reaches the black screen.
+      // A software renderer is the same caller's choice here (an explicit setBoardMode('3d') — the dev demo's own
+      // switch): since the gate refuses `?board=3d` on such a device (board3d/load.js board3dGate), this is the ONLY
+      // remaining way to reach the slow scene — and it is warned, because it is exactly what reaches the black screen.
       if (weak3d()) toast(t('警告：此设备为软件渲染（弱显卡），强制开启 3D 棋盘可能导致黑屏卡死；请关闭 3D 或改用不带 ?board=3d 的链接。'), 'error', { ttl: 12000 });
       const [THREE, pack] = await Promise.all([loadThree(), loadBoardPack(assets, boardThemeGroup)]);
       return enable3d(THREE, pack);

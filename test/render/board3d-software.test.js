@@ -1,13 +1,17 @@
 // test/render/board3d-software.test.js — 软件渲染 / 弱显卡下 3D 棋盘的判定（render/app.js 与 board3d/load.js）:
-// 「gl2fast=false ⇒ 3D 不启用，或（显式 `?board=3d`）给出警告」。
+// 「gl2fast=false ⇒ 一律 2D，连显式 `?board=3d` 也不能覆盖」。
 //
 // 现场问题（2026-10，多个玩家）: 进游戏后黑屏 + 鼠标不动，只能重启浏览器 / 电脑。3D 棋盘（three.js）在软件
 // 渲染的机器上同样被开启 —— 老判定 `webgl2Available(boardPref === '3d')` 把 `?board=3d` 映射成 allowSlow=true，
 // 于是「major performance caveat」（SwiftShader / llvmpipe / 被黑名单的核显）也能过闸，让 CPU 硬跑一个全分辨率、
 // 带阴影、带抗锯齿的场景，把驱动压到复位。
 //
-// 判定链（高 → 低）: `?board=2d`（紧急 / 远程总开关，记住在 localStorage）> 软件渲染 ⇒ 2D > 性能模式 ⇒ 2D >
-// `?board=3d`（显式覆盖，软件渲染下照旧开启但必须警告）> 默认 3D。`board3dGate` 是 render/app.js、
+// 0.2.6 的补丁只堵住了 auto：`?board=3d` 会警告，但仍然照开 —— 而弱机手里那条链接正是黑屏本身。所以这里再收紧
+// 一格：设备档位（board3dDeviceClass）否决 `pref`，`?board=3d` 在软件渲染上也落回 2D。要看慢场景的开发者走
+// `view.setBoardMode('3d')`（dev demo 的开关），那条路径仍然照开并警告。
+//
+// 判定链（高 → 低）: `?board=2d`（紧急 / 远程总开关，记住在 localStorage）> 软件渲染 ⇒ 2D（`?board=3d` 也覆盖不了）
+// > `?board=3d`（显式覆盖，真显卡上照开）> 性能模式 ⇒ 2D > 默认 3D。`board3dGate` 是 render/app.js、
 // `__SP_BOARD3D_PROBE__()` 与 `stats().boardGate` 共用的同一份判定，所以这里测它等于测真实路径。
 
 import { test, describe, before, afterEach } from 'node:test';
@@ -67,7 +71,7 @@ function stubDocument({ fast = false, any = true } = {}) {
   };
 }
 
-describe('board3dGate: the software renderer can no longer reach the 3D board by accident', () => {
+describe('board3dGate: a software renderer cannot reach the 3D board at all — no URL overrides it', () => {
   test('gl2fast=false (软件渲染) + auto ⇒ 3D off, and the player is told why', () => {
     const g = board3dGate('auto', { gl2fast: false, perf: false });
     assert.equal(g.want, false, 'the 3D board must not load on a software renderer');
@@ -97,19 +101,43 @@ describe('board3dGate: the software renderer can no longer reach the 3D board by
     }
   });
 
-  test('?board=3d is still honoured, but a software renderer gets an explicit warning notice', () => {
+  test('?board=3d cannot buy a software renderer the 3D board: forced 2D, and told why', () => {
     const g = board3dGate('3d', { gl2fast: false, perf: false });
-    assert.equal(g.want, true, 'the override stays available (high-end machines / dev)');
-    assert.equal(g.reason, 'forced-software');
-    assert.equal(g.notice, 'forced-software', 'never silently: this is the link that froze players');
+    assert.equal(g.want, false, 'the device class refuses the override: that link is the black screen itself');
+    assert.equal(g.software, true);
+    assert.equal(g.reason, 'software');
+    assert.equal(g.notice, 'software', 'visible, not silent: the player is told why the board is plain');
+    assert.equal(g.pref, '3d', 'the wish is still reported, so stats().boardGate says "3D asked" AND "device said no"');
+  });
+
+  test('?board=3d on a real GPU still opens the 3D board (the override is narrowed, not removed)', () => {
     const ok = board3dGate('3d', { gl2fast: true, perf: false });
     assert.deepEqual(ok, { want: true, pref: '3d', software: false, reason: 'ok', notice: null });
   });
 
-  test('?board=3d overrides 性能模式 (an explicit request the player can see), still warned on software', () => {
-    const g = board3dGate('3d', { gl2fast: false, perf: true });
-    assert.equal(g.want, true);
-    assert.equal(g.notice, 'forced-software');
+  test('?board=3d beats 性能模式 on a real GPU; on a software renderer the device class beats both', () => {
+    const gpu = board3dGate('3d', { gl2fast: true, perf: true });
+    assert.equal(gpu.want, true, 'an explicit request the player can see wins over the performance mode');
+    assert.equal(gpu.reason, 'ok');
+    assert.equal(gpu.notice, null);
+    const soft = board3dGate('3d', { gl2fast: false, perf: true });
+    assert.equal(soft.want, false, 'software renders the 2D board whatever the URL and the setting say');
+    assert.equal(soft.reason, 'software');
+    assert.equal(soft.notice, 'software');
+  });
+
+  test('a page load with ?board=3d on a software renderer ends up 2D (URL → boardPreference → gate)', () => {
+    const doc = stubDocument({ fast: false, any: true });
+    const b = stubBrowser({ search: '?board=3d' });
+    try {
+      resetBoard3dDeviceClass();
+      const pref = boardPreference('auto');
+      assert.equal(pref, '3d', 'the URL is still what the player asked for');
+      const g = board3dGate(pref, { gl2fast: !board3dDeviceClass().software, perf: false, remote: boardForcedByURL() });
+      assert.equal(g.want, false, 'the software renderer gets the 2D board anyway — the very fix of this suite');
+      assert.equal(g.reason, 'software');
+      assert.equal(g.notice, 'software');
+    } finally { b.restore(); doc(); }
   });
 
   test('性能模式 in auto mode on a real GPU ⇒ 2D, silently', () => {
@@ -126,7 +154,8 @@ describe('board3dGate: the software renderer can no longer reach the 3D board by
       assert.equal(board3dDeviceClass().software, true);
       assert.equal(board3dGate('auto').want, false);
       assert.equal(board3dGate('auto').notice, 'software');
-      assert.equal(board3dGate('3d').notice, 'forced-software');
+      assert.equal(board3dGate('3d').want, false, 'the live device class refuses ?board=3d as well');
+      assert.equal(board3dGate('3d').notice, 'software');
     } finally { restore(); }
   });
 });

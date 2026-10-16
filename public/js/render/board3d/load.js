@@ -41,7 +41,9 @@ export function loadThree(url = THREE_URL) {
 
 /**
  * Can this browser run the 3D board? (WebGL2 — three r163+ requires it.) Software / blocklisted GPUs ("major
- * performance caveat") count as unavailable unless `allowSlow` (an explicit `?board=3d`).
+ * performance caveat") count as unavailable unless `allowSlow` — which since the 2026-10 black-screen fix is the
+ * explicit dev switch `setBoardMode('3d')` only: a `?board=3d` no longer buys a slow device the 3D board
+ * (`board3dGate` below decides that, and the device class beats the URL).
  */
 export function webgl2Available(allowSlow = false) {
   try {
@@ -63,10 +65,11 @@ let deviceClassCache = null;
  * What this browser can actually render with — the once-per-page device class behind the 3D board's gate.
  *
  * `software`: WebGL2 exists only WITH the "major performance caveat" (SwiftShader / llvmpipe / a blocklisted GPU).
- * Such a renderer still answers `webgl2Available(true)`, which is why the forced `?board=3d` switched the 3D board on
- * for it — a native-resolution, shadowed, antialiased three.js scene the CPU has to rasterise, the load that left
- * weak machines on a black screen with a dead cursor (field report, 2026-10). The probe is one throwaway canvas +
- * context per page (≈ one draw) and its result is cached: `software` cannot change, and the gate asks on every view.
+ * Such a renderer still answers `webgl2Available(true)`, which is how the forced `?board=3d` used to switch the 3D
+ * board on for it — a native-resolution, shadowed, antialiased three.js scene the CPU has to rasterise, the load that
+ * left weak machines on a black screen with a dead cursor (field report, 2026-10). The gate therefore reads this class
+ * BEFORE any `pref`, so no URL can ask for that load again. The probe is one throwaway canvas + context per page
+ * (≈ one draw) and its result is cached: `software` cannot change, and the gate asks on every view.
  *
  * `getContext` is called as a method of its own canvas (a bare call throws Illegal invocation in Chrome).
  *
@@ -99,24 +102,28 @@ export function boardPreferenceFromURL(search) {
 /**
  * The 3D board's gate: is the 3D board wanted, and what (if anything) must the player be told about it?
  *
- * Precedence, highest first — the order the settings and the URL have always had:
- *   1. `pref` (`?board=3d|2d`, then the remembered choice, then the view option; `app/view.js boardPreference`) —
- *      `2d` wins over everything: that is the emergency switch, and it is also the sticky remote kill switch;
+ * Precedence, highest first — what overrides what:
+ *   1. `pref === '2d'` (`?board=2d`, then the remembered choice, then the view option; `app/view.js boardPreference`)
+ *      — `2d` wins over EVERYTHING, software renderer or not: that is the emergency switch, and it is also the sticky
+ *      remote kill switch;
  *   2. no WebGL2 at all — always 2D, silently (three r163+ needs WebGL2; nothing was ever possible);
- *   3. WebGL2 as the FAST renderer asks for it (`gl2fast` = `webgl2Available(false)`, i.e. failIfMajorPerformanceCaveat)
- *      — false ⇒ software / blocklisted ⇒ 2D, whatever 画质 says, and the player is told (that is the fix);
- *   4. 性能模式 (`perf`) — on ⇒ 2D, silently (the player turned it on);
- *   5. `pref === '3d'`: the explicit override ("I know my machine" / dev). It wins over 3 and 4 because the slow path
- *      was asked for on purpose, but a software renderer still gets a `forced-software` warning, so the player is told
- *      what the override costs on this machine instead of meeting the black screen unexplained.
- *
- * The rule this adds is 5's caveat, not its refusal: a software renderer can no longer reach the 3D board by accident
- * (no `?board=3d`), while the override stays available to whoever asks for it.
+ *   3. a software / blocklisted renderer (`gl2fast` = `webgl2Available(false)`, i.e. failIfMajorPerformanceCaveat, is
+ *      false) — always the 2D board with the `software` notice, and NOTHING overrides this, `pref === '3d'` included:
+ *      that URL is exactly what used to hand such a device the full slow scene, and the black screens of 2026-10 are
+ *      what it handed back. The device class is a fact about the machine, not an opinion a URL may overrule;
+ *   4. `pref === '3d'`: the explicit override ("I know my machine" / dev). It beats 5 and 6, so on a real GPU the 3D
+ *      board still switches on as it always did;
+ *   5. 性能模式 (`perf`) — on ⇒ 2D, silently (the player turned it on);
+ *   6. default ⇒ the 3D board.
  *
  * @param {'2d'|'3d'|'auto'} pref
  * @param {{ gl2?: boolean, gl2fast?: boolean, perf?: boolean, remote?: boolean }|null} [probe] defaults to the live
  *   `board3dDeviceClass()` (which answers both `gl2` and `gl2fast` in one probe)
- * @returns {{ want: boolean, pref: '2d'|'3d'|'auto', software: boolean, reason: '2d'|'nogl2'|'perf'|'software'|'forced-software'|'ok', notice: 'software'|'forced-software'|'remote-2d'|null }}
+ * The one entry point an explicit `?board=3d` cannot reopen is 3 above: a player on a software renderer gets the 2D
+ * board (and the `software` notice) however the URL is written. A developer who really must see the slow scene has
+ * `view.setBoardMode('3d')` — the dev demo's own switch — which still opens it, warns, and is the only remaining path.
+ *
+ * @returns {{ want: boolean, pref: '2d'|'3d'|'auto', software: boolean, reason: '2d'|'nogl2'|'software'|'perf'|'ok', notice: 'software'|'remote-2d'|null }}
  */
 export function board3dGate(pref = 'auto', probe = null) {
   const cls = board3dDeviceClass();
@@ -128,12 +135,10 @@ export function board3dGate(pref = 'auto', probe = null) {
     return { want: false, pref, software, reason: '2d', notice: probe?.remote ? 'remote-2d' : null };
   }
   if (!gl2) return { want: false, pref, software, reason: 'nogl2', notice: null };
-  if (pref === '3d') {
-    return software
-      ? { want: true, pref, software, reason: 'forced-software', notice: 'forced-software' }
-      : { want: true, pref, software, reason: 'ok', notice: null };
-  }
+  // 软件渲染 / 弱显卡：一律 2D —— 显式 `?board=3d` 也不行（弱机上那个 URL 就是黑屏本身）。`pref` 仍原样回读，
+  // 所以 `stats().boardGate` / 探针同时说得出「玩家要的是 3D」和「设备档位否决了它」；`want` 只由设备档位决定。
   if (software) return { want: false, pref, software, reason: 'software', notice: 'software' };
+  if (pref === '3d') return { want: true, pref, software, reason: 'ok', notice: null };
   if (perf) return { want: false, pref, software, reason: 'perf', notice: null };
   return { want: true, pref, software, reason: 'ok', notice: null };
 }
@@ -148,7 +153,7 @@ export function board3dGate(pref = 'auto', probe = null) {
  *   await __SP_BOARD3D_PROBE__() → {
  *     gl2:      WebGL2 ignoring the "major performance caveat" flag (a software renderer still reports true here),
  *     gl2fast:  WebGL2 as the DEFAULT `auto` mode asks for it (software / blocklisted ⇒ false → 2D),
- *     software: gl2fast is false — the device class that disables 3D, and that is warned when `?board=3d` overrides it,
+ *     software: gl2fast is false — the device class that always disables 3D (`?board=3d` included) and shows the notice,
  *     stored:   the remembered `?board=` choice (the sticky remote kill switch), or null,
  *     listed:   the local-art manifest lists map/autochess/TX_autochessi_D (i.e. the board art is installed),
  *     url:      the URL that listing resolves to (null when not installed),
