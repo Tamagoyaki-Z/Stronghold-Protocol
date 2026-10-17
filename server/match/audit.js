@@ -455,7 +455,9 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
     runInvariants();
     check('prep', () => {
       if (m.phase !== PHASE.PREP) return;
-      if (m.soloUntimed) { if (m.deadline) fail('untimed prep is timed'); } else if (!m._prepEndQueued) expectDeadline(gd.prepTime(m.round), 'PREP');
+      // the deadline's own value (prepTime × the room's 准备时间倍率, whole seconds): Match.prepSeconds is that one
+      // source, so a scaled prep is never flagged as a mismatch
+      if (m.soloUntimed) { if (m.deadline) fail('untimed prep is timed'); } else if (!m._prepEndQueued) expectDeadline(m.prepSeconds(m.round), 'PREP');
     });
     return res;
   });

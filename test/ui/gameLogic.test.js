@@ -220,6 +220,13 @@ describe('countdown', () => {
   test('phase totals from config', () => {
     assert.equal(phaseTotalSeconds({ phase: PHASE.INFO_CHECK }, config), config.timers.infoCheck);
     assert.equal(phaseTotalSeconds({ phase: PHASE.PREP, modeId: 'mode_multi_hard', round: 4 }, config), config.modes.mode_multi_hard.rounds['4'].prepTime);
+    // 准备时间倍率 (room.setPrepScale): the same factor and the same whole-second rounding as the server deadline
+    assert.equal(phaseTotalSeconds({ phase: PHASE.PREP, modeId: 'mode_multi_hard', round: 4 }, config, null, 1.5),
+      Math.round(config.modes.mode_multi_hard.rounds['4'].prepTime * 1.5));
+    assert.equal(phaseTotalSeconds({ phase: PHASE.PREP, modeId: 'mode_multi_hard', round: 4 }, config, null, 1.25),
+      Math.round(config.modes.mode_multi_hard.rounds['4'].prepTime * 1.25));
+    assert.equal(phaseTotalSeconds({ phase: PHASE.PREP, modeId: 'mode_multi_hard', round: 4 }, config, null, 9),
+      config.modes.mode_multi_hard.rounds['4'].prepTime, 'a factor outside PREP_SCALES is ×1');
     assert.equal(phaseTotalSeconds({ phase: PHASE.PREP, modeId: 'mode_single_hard', round: 4 }, config), null, 'solo prep untimed');
     assert.equal(phaseTotalSeconds({ phase: PHASE.SP_DRAFT, sp: { cards: [], picks: {} }, players: [] }, config), config.timers.spFirst);
     assert.equal(phaseTotalSeconds({ phase: PHASE.SP_DRAFT, sp: { cards: [{}, {}], picks: { a: 0 } }, players: [{ playerId: 'a' }] }, config), config.timers.spTurn);

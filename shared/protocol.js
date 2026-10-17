@@ -1,7 +1,7 @@
 // Normative message catalogue (DESIGN §8). Used by server (validation) and client (building requests).
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
-import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, ROOM_CAPACITIES, MAX_DRAFT_CARDS, EMOTES, GEO } from './constants.js';
+import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, ROOM_CAPACITIES, PREP_SCALES, MAX_DRAFT_CARDS, EMOTES, GEO } from './constants.js';
 import { isDroppableChess } from './standIn.js';
 import { diySlotIds, validateDiyPicks } from './diy.js';
 import { cultivatedStats, isPotential, isCultivate, POTENTIAL_DEFAULT, CULTIVATE_DEFAULT, hasPotentialData } from './potential.js';
@@ -468,6 +468,13 @@ export const C2S = {
   'room.ready': { ready: isBool },
   'room.setDifficulty': { difficulty: (v) => DIFFICULTIES.includes(v) },
   'room.setCapacity': { capacity: (v) => ROOM_CAPACITIES.includes(v) },
+  // 准备时间倍率 (user request 2026-10-17): host-only, before the match — like a difficulty change it is refused
+  // once the room runs one, but unlike it, it does NOT un-ready the others: it changes no layout, only how long
+  // the preps of a TIMED (co-op) match run. The room keeps it in room.state.prepScale and the match takes it as
+  // opts.prepScale (Match.prepSeconds). A value outside PREP_SCALES is BAD_MSG, so an old client that never sends
+  // the field at all leaves the room at ×1. Post-v1 business type: readable JSON fallback, no new numeric id
+  // (test/wire-codec.test.js V1_JSON_FALLBACK.c2s).
+  'room.setPrepScale': { prepScale: (v) => PREP_SCALES.includes(v) },
   'room.setMatchmaking': { allowed: isBool },
   // Upstream compatibility: this branch exposes the manual-human-first rule as fixed on; disabling is refused.
   'room.setAiPicksLast': { on: isBool },

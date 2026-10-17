@@ -69,7 +69,7 @@ Economy/shop/pool/merge/hand rules: exactly as research 00-INDEX §3–§4 (inco
 Pointing Stick creates at most one pending offer per alive, non-Ready player in PREP. The owner confirms it with
 `g.choice { idx, choiceId }`; confirmation validates its ID, round and index, adds one bounty and clears the offer.
 Ready requires no pending offer as well as an empty temp area. The co-op prep deadline resolves the offer randomly
-before resolving temp and setting Ready; untimed solo / single-human prep does not schedule a separate choice timer.
+before resolving temp and setting Ready; untimed solo / single-human prep does not schedule a separate choice timer. The room's 准备时间倍率 (`room.setPrepScale`, §8.1) scales the co-op prep deadline (`round(prepTime × factor)` whole seconds, `Match.prepSeconds`) and never gives an untimed prep a deadline.
 The offer is recipient-private, including after reconnect, and never enters `m.public.sp` or a teammate's scout view.
 
 ### 6.3 Bonds & layers (bondsMeta.js)

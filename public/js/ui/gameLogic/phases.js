@@ -1,7 +1,7 @@
 // ui/gameLogic/phases.js — phase families, banners, the round's result box and 战斗结束 sound, countdowns, the round
 // start's deploy replay. Re-exported from ../gameLogic.js.
 
-import { PHASE } from '../../../../shared/constants.js';
+import { PHASE, prepScaleOf } from '../../../../shared/constants.js';
 import { bossLevelSeconds } from '../matchStatus.js';
 import { clamp, int, isObj, sortedPlayers } from './shared.js';
 import { normalizeSp } from './draft.js';
@@ -238,8 +238,10 @@ export function countdownState(deadline, now, total, warnAt = 10) {
  * @param {any} pub m.public
  * @param {any} config data/config.json
  * @param {string|null} [myId]
+ * @param {number} [prepScale] the room's 准备时间倍率 (room.state.prepScale; absent or not a PREP_SCALES factor = ×1) —
+ *   only the PREP total uses it, and it is the same rounded seconds the server's deadline counts down
  */
-export function phaseTotalSeconds(pub, config, myId = null) {
+export function phaseTotalSeconds(pub, config, myId = null, prepScale = 1) {
   if (!isObj(pub)) return null;
   const timers = isObj(config?.timers) ? config.timers : {};
   const mode = isObj(config?.modes) ? config.modes[pub.modeId] : null;
@@ -254,7 +256,14 @@ export function phaseTotalSeconds(pub, config, myId = null) {
       const first = !sp || sp.pickedCount === 0;
       return first ? (num(timers.spFirst) ?? 30) : (num(timers.spTurn) ?? 16);
     }
-    case PHASE.PREP: return num(mode?.rounds?.[String(pub.round)]?.prepTime);
+    // 准备时间倍率 (room.setPrepScale): the SAME 口径 as the server's deadline — the same factor (room.state.prepScale)
+    // and the same rounding to whole seconds (Match.prepSeconds) — so the gauge's total is the time the server is
+    // actually counting down. A solo / single-human prep is untimed (the config carries no prepTime for it and the
+    // server sends no deadline), so there is nothing to scale.
+    case PHASE.PREP: {
+      const base = num(mode?.rounds?.[String(pub.round)]?.prepTime);
+      return base == null ? null : Math.round(base * prepScaleOf(prepScale));
+    }
     case PHASE.COMBAT:
     case PHASE.UNITE: return num(mode?.rounds?.[String(pub.round)]?.combatTimeLimit);
     // 最终攻势 / 隐秘核心: m.public.deadline is the level's 120 s countdown (maxPlayTime; the battle goes on past it)

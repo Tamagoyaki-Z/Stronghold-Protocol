@@ -3,7 +3,7 @@
 // (onPrepEnd, PlayerState.endPrep, then COMBAT or the Final Assault / Hidden Core).
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
-import { PHASE } from '../../../shared/constants.js';
+import { PHASE, prepScaleOf } from '../../../shared/constants.js';
 import { botPrepBeginSteps, botPrepEndSteps } from '../bot.js';
 import { DELAYS } from './common.js';
 
@@ -22,13 +22,30 @@ export class MatchPrep {
       this.dispatch(ps, 'onPrepStart', { round: this.round });
       ps.recompute();
     }
-    // solo / single-human matches: untimed (soloUntimed); co-op: the round's prepTime
-    const secs = this.soloUntimed ? null : this.gd.prepTime(this.round);
+    // solo / single-human matches: untimed (soloUntimed); co-op: the round's prepTime × the room's 准备时间倍率
+    const secs = this.prepSeconds(this.round);
     this.setDeadline(secs, () => this.prepDeadline());
     let i = 0;
     for (const ps of alive) if (ps.botControlled) this.scheduleBotPrep(ps, i++);
     this.markPublic();
     this.maybeEndPrep();
+  }
+
+  /**
+   * The round's online prep length in WHOLE seconds — the single value the phase deadline and server/match/audit.js
+   * both read (the auditor's PREP expectation is this, so it can never disagree with the countdown). null = untimed,
+   * which a solo / single-human match always is (soloUntimed: the 准备时间倍率 must never turn 独立模拟's
+   * wait-for-ready prep into a countdown). A timed prep takes the room's factor (opts.prepScale from
+   * room.setPrepScale — absent, null or a value outside PREP_SCALES, e.g. an old client, is ×1) and rounds the
+   * scaled length to whole seconds.
+   * @param {number} [round]
+   * @returns {number|null}
+   */
+  prepSeconds(round = this.round) {
+    if (this.soloUntimed) return null;
+    const base = this.gd.prepTime(round);
+    if (!Number.isFinite(base)) return base; // null / a non-positive config value means untimed
+    return Math.round(base * prepScaleOf(this.opts && this.opts.prepScale));
   }
 
   /**

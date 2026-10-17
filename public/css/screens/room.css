@@ -67,6 +67,16 @@
 button.room-matchmaking:hover:not(:disabled) { border-color: var(--text-hi); color: var(--text-hi); }
 button.room-matchmaking:disabled { opacity: .45; cursor: default; }
 
+/* 准备时间倍率 (room.setPrepScale): the room bar's second host control, the footprint of 人数上限's picker. No
+   :has() and no color-mix() — the active option reuses the existing mint tokens. */
+.room-prep { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .08rem .16rem; min-height: .52rem; padding: .04rem .3rem; color: var(--text-lo); font-size: calc(.16 * var(--t)); }
+.room-prep__label b { color: var(--mint-400); font-size: calc(.2 * var(--t)); }
+.room-prep__options { display: flex; gap: .06rem; }
+.room-prep__opt { min-width: .56rem; height: .36rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .35); color: var(--text-lo); font-family: var(--font-num); font-size: calc(.16 * var(--t)); }
+.room-prep__opt:hover:not(:disabled) { border-color: var(--mint-500); color: var(--text-hi); }
+.room-prep__opt.is-active { border-color: var(--mint-500); background: var(--mint-a20); color: var(--mint-400); }
+.room-prep__opt:disabled { opacity: .35; cursor: default; }
+
 /* 「A 组 4 人 · B 组 4 人」 in the room's info bar — one chip per group, in that group's colour. Nothing while the
    room is a single shared pool (five players or fewer). */
 .room-groups { display: flex; align-items: center; gap: .1rem; flex-basis: 100%; justify-content: center; }

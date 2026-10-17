@@ -20,6 +20,7 @@ import { enemyIconUrl, factionIconUrl } from '../ui/assetUrls.js';
 import { useStore } from '../store.js';
 import { data } from '../data.js';
 import { t, tParts } from '../../../shared/i18n.js';
+import { prepScaleOf } from '../../../shared/constants.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -62,7 +63,7 @@ export function BriefingScreen() {
   return html`<div class="screen brief">
     <div class="brief__bg" aria-hidden="true"></div>
     <${StepHeader} step=${1} of=${2} title=${t('确认本局信息')} micro="BRIEFING // INFO CHECK" pub=${pub}
-      total=${phaseTotalSeconds(pub, gd.config)} onExit=${() => setExit(true)} />
+      total=${phaseTotalSeconds(pub, gd.config, null, prepScaleOf(room?.prepScale))} onExit=${() => setExit(true)} />
     <${UnofficialMark} room=${room} class="brief__modmark" />
     <main class="brief__main">
       <section class="brief__left">

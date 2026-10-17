@@ -1932,6 +1932,8 @@
   "房主": "Host",
   "由房主选择": "Chosen by the host",
   "由房主设置": "Set by the host",
+  "准备时间": "Prep time",
+  "仅联机计时生效；单人/人机休整期不计时。": "Applies to online timed preps only; solo / AI-only preps stay untimed.",
   "转让房主给该博士": "Transfer host to this Doctor",
   "服主设置的每房 AI 队友上限": "Maximum AI teammates per room set by the server owner",
   "AI 队友 {used} / {limit}": "AI teammates {used} / {limit}",

@@ -21,6 +21,17 @@ export const BASE_SEATS = 4;
 export const MAX_SEATS = 20;
 export const DEFAULT_SEATS = 8;
 export const ROOM_CAPACITIES = Object.freeze([4, 6, 8, 10, 12, 16, 20]);
+/**
+ * 房间可设的准备时间倍率 (room.setPrepScale, user request 2026-10-17): the factors a host may pick for the
+ * room's ONLINE prep lengths. A factor scales a TIMED (co-op, two or more humans) prep only — a solo /
+ * single-human match stays untimed (Match.soloUntimed; server/match/match/prep.js prepSeconds) — and the
+ * server rounds the scaled length to whole seconds: the one value both the phase deadline and
+ * server/match/audit.js read, so the rule auditor can never disagree with the countdown.
+ */
+export const PREP_SCALES = Object.freeze([1, 1.25, 1.5, 2]);
+export const DEFAULT_PREP_SCALE = 1;
+/** The factor a wire value means: only a listed factor counts — absent, null or anything else (an old client) is ×1. */
+export const prepScaleOf = (v) => (PREP_SCALES.includes(v) ? v : DEFAULT_PREP_SCALE);
 /** One independent 机变 page per fixed group; card indexes are local to its six positions. */
 export const MAX_DRAFT_CARDS = 6;
 /**

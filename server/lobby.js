@@ -9,7 +9,7 @@
 //     host transfer/migration swaps only the host and seat 0. Running matches retain their fixed seats.
 //   * ▸ Being in a LOBBY room and sending room.create / room.join implicitly leaves it. While your room is
 //     in a match, create/join of another room fails with ROOM_STARTED (send g.leave or room.leave first).
-//   * Host-only: room.setDifficulty, room.setAiPicksLast, room.addBot, room.removeBot, room.kick, room.start.
+//   * Host-only: room.setDifficulty, room.setPrepScale, room.setAiPicksLast, room.addBot, room.removeBot, room.kick, room.start.
 //     ▸ Changing the difficulty or the AI-picks-last option (co-op only) un-readies the other humans.
 //     ▸ room.start requires every other human to be connected and ready; the host's start counts as the host's
 //     ready (the host may still toggle room.ready for display).
@@ -159,7 +159,7 @@
 //     a player seat (the seat is kept and given back on resume).
 
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { DIFFICULTIES, ERR, PHASE, DEFAULT_SEATS, ROOM_CAPACITIES, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
+import { DIFFICULTIES, ERR, PHASE, DEFAULT_SEATS, ROOM_CAPACITIES, PREP_SCALES, DEFAULT_PREP_SCALE, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, isRoomAvatar, charPotentialChanges } from '../shared/protocol.js';
 import { encode, prepareMessage, sendPrepared, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
@@ -294,6 +294,8 @@ export class Room {
      * humans first inside each draft group (D004/D012); disconnected/autoplay humans share the automatic category.
      */
     this.aiPicksLast = mode !== 'solo';
+    /** 准备时间倍率 (room.setPrepScale): the online prep lengths' factor, ×1 unless the host picked one. */
+    this.prepScale = DEFAULT_PREP_SCALE;
     /** @type {string | null} */
     this.hostId = null;
     /** @type {number | null} Server policy; null leaves AI seats bounded only by room capacity. */
@@ -384,6 +386,7 @@ export class Room {
       difficulty: this.difficulty,
       capacity: this.capacity,
       aiPicksLast: this.aiPicksLast,
+      prepScale: this.prepScale,
       allowMatchmaking: this.allowMatchmaking,
       inMatch: !!this.match,
       ...(grouped ? { groups: sizes } : {}),
@@ -740,6 +743,7 @@ export class Lobby {
       case 'room.setCapacity': return this.setCapacity(session, msg);
       case 'room.setMatchmaking': return this.setMatchmaking(session, msg);
       case 'room.setAiPicksLast': return this.setAiPicksLast(session, msg);
+      case 'room.setPrepScale': return this.setPrepScale(session, msg);
       case 'room.addBot': return this.addBot(session);
       case 'room.removeBot': return this.removeBot(session, msg);
       case 'room.kick': return this.kick(session, msg);
@@ -1046,6 +1050,27 @@ export class Lobby {
     if (room.allowMatchmaking === allowed) return OK;
     this.dropReplay(room, session.playerId);
     room.allowMatchmaking = allowed;
+    this.broadcastState(room);
+    return OK;
+  }
+
+  /**
+   * 准备时间倍率 (room.setPrepScale, user request 2026-10-17): the factor of the room's TIMED prep lengths
+   * (PREP_SCALES: 1 / 1.25 / 1.5 / 2, default 1). Host-only and before the match, like every other room
+   * setting (ROOM_STARTED once it runs): the match takes the factor it started with (startMatch opts.prepScale,
+   * Match.prepSeconds), so a prep already counting down can never change length. A solo / single-human match is
+   * untimed at any factor (Match.soloUntimed) — the setting is simply inert there, which is why it is accepted in
+   * a solo room too instead of being refused.
+   */
+  setPrepScale(session, { prepScale }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (!PREP_SCALES.includes(prepScale)) return fail(ERR.BAD_MSG, 'invalid prep time scale');
+    if (room.prepScale === prepScale) return OK;
+    this.dropReplay(room, session.playerId);
+    room.prepScale = prepScale;
     this.broadcastState(room);
     return OK;
   }
@@ -1848,6 +1873,9 @@ export class Lobby {
         modeId: room.content?.modeId || modeIdFor(room.mode, room.difficulty),
         // 「AI 队友最后选择」 (GitHub #338): fixed for the match
         aiPicksLast: room.mode !== 'solo' && room.aiPicksLast === true,
+        // 准备时间倍率 (room.setPrepScale): frozen for the match — every timed prep of it keeps the factor the
+        // room had when it started (Match.prepSeconds), so a prep can never resize under the players.
+        prepScale: room.prepScale,
         seats,
         // the spectator seats (header): watched like eliminated players, never players
         spectators: room.spectators.map((s) => s.playerId),

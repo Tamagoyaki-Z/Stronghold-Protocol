@@ -22,7 +22,7 @@
 // Texts go through t() (docs/I18N.md).
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
-import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS, DEFAULT_SEATS, ROOM_CAPACITIES, MAX_SPECTATORS } from '../../../shared/constants.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS, DEFAULT_SEATS, ROOM_CAPACITIES, PREP_SCALES, prepScaleOf, MAX_SPECTATORS } from '../../../shared/constants.js';
 import {
   html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo, useTicker, Modal,
 } from '../ui/components.js';
@@ -547,6 +547,26 @@ export function MatchmakingControl({ facts, busy, connected, onChange }) {
     : html`<span class=${cls} role="status" title=${hint} data-testid="room-matchmaking-state"><${Icon} name=${on ? 'check' : 'close'} />${label}</span>`;
 }
 
+/** 准备时间倍率 (room.setPrepScale): the room bar's second host control, shaped like 人数上限's picker. A member who
+ * is not the host reads the current factor — room.state.prepScale is the server's, the only writer. */
+function PrepScalePicker({ room, facts, busy, connected, onPick }) {
+  const scale = prepScaleOf(room.prepScale);
+  const hint = t('仅联机计时生效；单人/人机休整期不计时。');
+  const label = html`<span class="room-prep__label">${t('准备时间')} <b class="num">${'×' + scale}</b></span>`;
+  if (!facts.isHost) {
+    return html`<div class="room-prep" aria-label=${t('准备时间')} title=${hint}>
+      ${label}<span class="t-dim">${t('由房主设置')}</span>
+    </div>`;
+  }
+  return html`<div class="room-prep" aria-label=${t('准备时间')} title=${hint} data-testid="room-prep-scale">
+    ${label}<div class="room-prep__options" role="radiogroup" aria-label=${t('准备时间')}>
+      ${PREP_SCALES.map((v) => html`<button key=${v} type="button" role="radio" aria-checked=${scale === v ? 'true' : 'false'}
+        class=${`room-prep__opt${scale === v ? ' is-active' : ''}`} disabled=${!!busy || !connected}
+        data-testid=${`room-prep-${v}`} onClick=${() => v !== scale && onPick(v)}>${'×' + v}</button>`)}
+    </div>
+  </div>`;
+}
+
 function CapacityPicker({ room, facts, busy, connected, onPick, onMatchmaking }) {
   const capacity = room.capacity || facts.seats.length;
   const minCapacity = Math.max(1, ...facts.occupied.map((s) => s.seat + 1));
@@ -705,6 +725,7 @@ export function RoomScreen() {
   const setDifficulty = (difficulty) => run('diff', () => net.request('room.setDifficulty', { difficulty }));
   const setCapacity = (capacity) => run('capacity', () => net.request('room.setCapacity', { capacity }));
   const setMatchmaking = (allowed) => run('matchmaking', () => net.request('room.setMatchmaking', { allowed }));
+  const setPrepScale = (prepScale) => run('prepscale', () => net.request('room.setPrepScale', { prepScale }));
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
@@ -804,6 +825,7 @@ export function RoomScreen() {
     </header>
 
     ${coop ? html`<${CapacityPicker} room=${room} facts=${facts} busy=${busy} connected=${online} onPick=${setCapacity} onMatchmaking=${setMatchmaking} />` : null}
+    ${coop ? html`<${PrepScalePicker} room=${room} facts=${facts} busy=${busy} connected=${online} onPick=${setPrepScale} />` : null}
     <main class=${`seats${coop ? facts.seats.length > 10 ? ' seats--dense' : facts.seats.length > 4 ? ' seats--expanded' : '' : ' seats--solo'}${coop && facts.seats.length === 10 ? ' seats--ten' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
         myId=${me.playerId} busy=${busy} group=${groupOf(s, i)} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} onTransferHost=${transferHost}

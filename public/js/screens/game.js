@@ -74,7 +74,7 @@
 // phase). Its pill reads 观战中, never "你已被淘汰"; its exit only leaves the seat (ui/matchChrome.js ExitModal).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
-import { PHASE, GEO } from '../../../shared/constants.js';
+import { PHASE, GEO, prepScaleOf } from '../../../shared/constants.js';
 import { html, Spinner, PhaseBanner, ResultDialog, Icon, Button, confirmDialog, closeAllDialogs, useTicker } from '../ui/components.js';
 import { useGameData, GIcon } from '../ui/gameComponents.js';
 import { useFieldView } from '../ui/fieldHost.js';
@@ -188,6 +188,8 @@ function MatchScreen() {
   const chatOpen = useStore((s) => s.open, Object.is, chatStore);
   const hasChat = useStore((s) => !!s.matchId, Object.is, chatStore);
   const roomSolo = useStore((s) => s.room?.mode === 'solo');
+  // 准备时间倍率 (room.setPrepScale): the room's factor from room.state — the same value the server froze at start
+  const prepScale = useStore((s) => prepScaleOf(s.room?.prepScale));
   const spectator = useStore((s) => isSpectating(s.room, s.me.playerId));
   const metricsSetting = useSettings().combatMetrics === true;
   // gameplay plugins (DESIGN §32.6): the HUD corner's MOD mark — re-rendered only when the room's content changes
@@ -288,7 +290,7 @@ function MatchScreen() {
   const showShop = !!priv && alive && (phase === PHASE.PREP || phase === PHASE.SP_DRAFT || phase === PHASE.ROUND_START) && !watchingOther;
   const layersDisabled = phase === PHASE.UNITE || isBossPhase(phase);
   const sp = phase === PHASE.SP_DRAFT ? normalizeSp(pub?.sp, players, myId, pub?.poolGroups) : null;
-  const total = sp?.groups.length ? sp.turnSeconds : phaseTotalSeconds(pub, gd.config, myId);
+  const total = sp?.groups.length ? sp.turnSeconds : phaseTotalSeconds(pub, gd.config, myId, prepScale);
   const clockPub = sp?.groups.length ? { ...pub, deadline: sp.ownGroupId != null && !sp.untimed && !sp.done ? sp.turnDeadline : 0 } : pub;
   // solo pause: offered in the own battle; while m.public.paused every HUD clock stops at the pause moment
   const paused = isPaused(pub);
