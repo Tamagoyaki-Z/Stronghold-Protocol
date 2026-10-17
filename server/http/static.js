@@ -75,7 +75,7 @@ import { PACKS_URL, PACK_INDEX_FILE } from '../../shared/packs.js';
 import { PLUGINS_URL, PLUGIN_INDEX_VERSION, buildPluginIndex, extOf, isPackPath, isPluginId } from '../../shared/plugins/manifest.js';
 import { csUrlPart } from '../../shared/plugins/identity.js';
 import { FILE_URL_DIGITS, PLUGIN_AUDIO_EXTS, PLUGIN_FILES_URL, VISUAL_DOC_FILE, VISUAL_SETS_URL, VS_URL_DIGITS } from '../../shared/plugins/visual.js';
-import { SIM_WORKER_CSP } from './csp.js';
+import { SIM_WORKER_CSP, siteCsp } from './csp.js';
 import { UI_FRAME_CSP } from '../../shared/plugins/ui.js';
 
 /** Browser stand-in of server/data.js, served at /data.js (see the header). Served byte for byte: its first line names the entry, server/index.js. */
@@ -350,6 +350,15 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
       try { rendered = await runtime.renderIndex(absPath); }
       catch (error) { log.warn?.('[http] runtime cache unavailable, serving revalidated HTML', error.message); }
       if (rendered) {
+        // This document is the rendered one, not public/index.html: its import map carries every module's content
+        // hash (runtimeCache.js), so the site policy the listener set — hashed from the source file (csp.js) — names
+        // bytes the browser never receives and the page's only inline script gets blocked. Re-derive it from what is
+        // sent, but only when this server sends a site policy at all (SP_CSP=off, or an embedder without one: no
+        // header was set, and none is invented here).
+        if (res.getHeader('Content-Security-Policy')) {
+          rendered.csp ??= siteCsp(publicDir, rendered.importMapHashes);
+          res.setHeader('Content-Security-Policy', rendered.csp);
+        }
         // Only a content ETag validates generated HTML: index.html's mtime alone cannot detect a data-only update.
         await serveBuffer(req, res, { body: rendered.body, hash: rendered.tag, type: MIME['.html'], cacheControl: 'no-cache',
           key: `index:${rendered.tag}`, cache: gzipCache });

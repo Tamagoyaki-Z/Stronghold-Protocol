@@ -3,6 +3,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { importMapHashes } from './csp.js';
 
 export const RUNTIME_QUERY = 'rv';
 const HASH = /^[a-f0-9]{64}$/;
@@ -116,7 +117,9 @@ export class RuntimeCache {
         .replace(/\b(src|href)\s*=\s*(["'])(\/[^"'<>]*)\2/g, (whole, attr, quote, url) =>
           state.imports[url] ? `${attr}=${quote}${state.imports[url]}${quote}` : whole);
       const body = Buffer.from(rendered);
-      return { body, tag: `runtime-html-${digest(body)}` };
+      // The document's own import maps as served: the site policy must hash these bytes, not the source file's
+      // (static.js re-derives the policy for this response from them).
+      return { body, tag: `runtime-html-${digest(body)}`, importMapHashes: [...importMapHashes(rendered)] };
     })().catch((error) => { this.html = null; throw error; });
     return this.html;
   }

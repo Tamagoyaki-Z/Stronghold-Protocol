@@ -6,7 +6,7 @@ import os from 'node:os';
 import { Writable } from 'node:stream';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { siteCsp, SIM_WORKER_CSP } from '../../server/http/csp.js';
+import { siteCsp, importMapHashes, SIM_WORKER_CSP } from '../../server/http/csp.js';
 import { createRequestHandler } from '../../server/http/routes.js';
 import { createStaticHandler } from '../../server/http/static.js';
 import { installPixiNoEval } from '../../public/js/render/app/pixiNoEval.js';
@@ -35,6 +35,9 @@ test('page import maps hash exact bytes; no inline executable script/events; pag
   const csp = siteCsp(publicDir);
   assert.ok(!csp.includes('unsafe-eval')); assert.match(csp, /worker-src 'self' blob:/);
   assert.match(csp,/connect-src 'self';/);assert.ok(!/script-src[^;]*(?:data:|blob:)/.test(csp));
+  // Each document as it sits on disk. index.html is the one whose served bytes differ: the runtime renderer rewrites
+  // its import map, and static.js re-derives the policy for that response (the next test pins it) — this file's own
+  // map is the fallback for a serve without the renderer (runtimeCache off, or HTML without an app import map).
   for (const file of ['index.html', 'studio/index.html', 'dev/game-mock.html', 'dev/render-demo.html', 'dev/battle-perf.html', 'dev/uikit.html']) {
     const html = fs.readFileSync(path.join(publicDir, file), 'utf8');
     assert.ok(!/<[^>]+\son(?:load|error|click)=/i.test(html), file);
@@ -69,7 +72,8 @@ test('actual static responses: Worker CSP on 200/206/304 and encoded aliases, in
   for (const csp of [siteCsp(publicDir), null]) {
     const serve = handler(csp);
     const page = await request(serve, '/');
-    assert.equal(page.headers['content-security-policy'], csp || undefined);
+    // '/' is the rendered document, so a live site policy lists ITS import map, not the one in the file on disk.
+    assert.equal(page.headers['content-security-policy'], csp ? siteCsp(publicDir, importMapHashes(page.body)) : undefined);
     const a = await request(serve, '/js/battle/simWorker.js');
     assert.equal(a.status, 200); assert.equal(a.headers['content-security-policy'], SIM_WORKER_CSP);
     for (const headers of [{ range: 'bytes=0-20' }, { 'if-none-match': a.headers.etag }]) {
@@ -78,6 +82,30 @@ test('actual static responses: Worker CSP on 200/206/304 and encoded aliases, in
     }
     assert.match(SIM_WORKER_CSP, /connect-src 'none'/);
   }
+});
+test('the CSP of the index page hashes the import map the browser actually receives, not the file on disk', async () => {
+  const serve = handler(siteCsp(publicDir));
+  const page = await request(serve, '/');
+  assert.equal(page.status, 200);
+  // The served page is the runtime-rendered one. Hash its inline script here, independently of csp.js and static.js.
+  const served = [...page.body.matchAll(/<script\s+type=["']importmap["']\s*>([\s\S]*?)<\/script>/g)];
+  assert.equal(served.length, 1, 'the served page has exactly one inline import map');
+  const servedHash = createHash('sha256').update(served[0][1]).digest('base64');
+  const header = page.headers['content-security-policy'];
+  assert.ok(header, 'the site policy is on for this handler');
+  assert.ok(header.includes(`'sha256-${servedHash}'`), `CSP must allow the served import map (sha256-${servedHash})`);
+  // The map in public/index.html is not the one sent: the policy derived from the files alone would have blocked it.
+  // (All six documents carry the same pointer map, so that hash may legitimately survive in the header via studio/dev.)
+  const disk = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
+  const raw = [...disk.matchAll(/<script\s+type=["']importmap["']\s*>([\s\S]*?)<\/script>/g)];
+  assert.equal(raw.length, 1);
+  const rawHash = createHash('sha256').update(raw[0][1]).digest('base64');
+  assert.notEqual(rawHash, servedHash, 'the renderer rewrote the import map: the two hashes must differ');
+  assert.notEqual(header, siteCsp(publicDir), 'the served policy must not be the one derived from the files alone');
+  // A 304 must carry the same policy as the 200 it validates.
+  const again = await request(serve, '/', { 'if-none-match': page.headers.etag });
+  assert.equal(again.status, 304);
+  assert.equal(again.headers['content-security-policy'], header);
 });
 test('Pixi CSP adapter uploads matrices, samplers, arrays and scalars without code generation', () => {
   class ShaderSystem {}
