@@ -1012,7 +1012,12 @@ export function createAssets(options) {
     },
     /** Cached image element promise (null on failure). */
     image,
-    /**
+/**
+ * 对局期间收紧按需下载的并发（头像 / 立绘 / 骨架），返回是否发生了变化。
+ * 平时传 false 就是完全恢复到默认：image() 不限并发、骨架并发回到 opts.spineConcurrency（默认 6）。
+ * 由 ui/assetCache.js 跟着路由调用（它已经在做「对局期间暂停批量缓存」）。
+ * @param {boolean} inMatch
+ */
     setDownloadMode(inMatch) {
       const want = inMatch === true;
       const next = want ? (opts.imageConcurrencyPlaying ?? IMAGE_CONCURRENCY_MATCH) : Infinity;
