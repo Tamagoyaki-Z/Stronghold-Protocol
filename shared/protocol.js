@@ -471,10 +471,10 @@ export const C2S = {
   // 准备时间倍率 (user request 2026-10-17): host-only, before the match — like a difficulty change it is refused
   // once the room runs one, but unlike it, it does NOT un-ready the others: it changes no layout, only how long
   // the preps of a TIMED (co-op) match run. The room keeps it in room.state.prepScale and the match takes it as
-  // opts.prepScale (Match.prepSeconds). A value outside PREP_SCALES is BAD_MSG, so an old client that never sends
-  // the field at all leaves the room at ×1. Post-v1 business type: readable JSON fallback, no new numeric id
-  // (test/wire-codec.test.js V1_JSON_FALLBACK.c2s).
-  'room.setPrepScale': { prepScale: (v) => PREP_SCALES.includes(v) },
+  // opts.prepScale (Match.prepSeconds). prepScale is $optional: an ABSENT field means the default ×1 (an old
+  // client's frame), so a frame without it can never fail, while a value outside PREP_SCALES is BAD_MSG. Post-v1
+  // business type: readable JSON fallback, no new numeric id (test/wire-codec.test.js V1_JSON_FALLBACK.c2s).
+  'room.setPrepScale': { prepScale: (v) => PREP_SCALES.includes(v), $optional: ['prepScale'] },
   'room.setMatchmaking': { allowed: isBool },
   // Upstream compatibility: this branch exposes the manual-human-first rule as fixed on; disabling is refused.
   'room.setAiPicksLast': { on: isBool },

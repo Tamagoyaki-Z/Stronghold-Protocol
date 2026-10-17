@@ -1067,10 +1067,13 @@ export class Lobby {
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
-    if (!PREP_SCALES.includes(prepScale)) return fail(ERR.BAD_MSG, 'invalid prep time scale');
-    if (room.prepScale === prepScale) return OK;
+    // prepScale is $optional: an absent field is the default ×1 (an old client's frame, or a caller that only
+    // wants the default back); anything that is not a PREP_SCALES factor is refused
+    const scale = prepScale === undefined ? DEFAULT_PREP_SCALE : prepScale;
+    if (!PREP_SCALES.includes(scale)) return fail(ERR.BAD_MSG, 'invalid prep time scale');
+    if (room.prepScale === scale) return OK;
     this.dropReplay(room, session.playerId);
-    room.prepScale = prepScale;
+    room.prepScale = scale;
     this.broadcastState(room);
     return OK;
   }

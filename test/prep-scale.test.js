@@ -46,10 +46,13 @@ test('room.setPrepScale: only the four offered factors pass the protocol boundar
   assert.deepEqual([...PREP_SCALES], [1, 1.25, 1.5, 2]);
   assert.equal(DEFAULT_PREP_SCALE, 1);
   for (const prepScale of PREP_SCALES) assert.equal(validateC2S({ t: 'room.setPrepScale', prepScale }), null, `×${prepScale} is offered`);
-  for (const bad of [0, 1.1, 3, -1, '1.5', null, undefined, NaN, true, {}]) {
+  // a value that is present but not a PREP_SCALES factor is refused
+  for (const bad of [0, 1.1, 3, -1, '1.5', null, NaN, true, {}]) {
     assert.notEqual(validateC2S({ t: 'room.setPrepScale', prepScale: bad }), null, `refused: ${String(bad)}`);
   }
-  assert.notEqual(validateC2S({ t: 'room.setPrepScale' }), null, 'the field is required on the wire, never silently defaulted');
+  // $optional: an absent field (an old client's frame) means the default ×1 and is never an error
+  assert.equal(validateC2S({ t: 'room.setPrepScale' }), null, 'the field is $optional: an absent field means ×1');
+  assert.equal(validateC2S({ t: 'room.setPrepScale', prepScale: undefined }), null, 'an explicit undefined counts as absent');
 });
 
 test('④ a room opens at ×1, only its host may change it, and every member is told', async (t) => {
@@ -74,6 +77,9 @@ test('④ a room opens at ×1, only its host may change it, and every member is 
     }
     assert.equal((await host.waitFor('room.state', (s) => s.prepScale === 2)).prepScale, 2);
     assert.equal((await host.request({ t: 'room.setPrepScale', prepScale: 3 })).code, 'BAD_MSG', 'not a PREP_SCALES factor');
+    // ④ an old client's frame: the field absent means the default ×1, never a refusal
+    assert.equal((await host.request({ t: 'room.setPrepScale' })).t, 'ok', 'a frame without the field is accepted');
+    assert.equal((await host.waitFor('room.state', (s) => s.prepScale === DEFAULT_PREP_SCALE)).prepScale, DEFAULT_PREP_SCALE);
   } finally {
     await Promise.all(clients.map((c) => c.terminate()));
     await srv.close();
