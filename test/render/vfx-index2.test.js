@@ -137,7 +137,7 @@ async function setup() {
     active: true, time: 0, lite: false, tier: 'full', timers: [],
     lib: { has: (k) => !!index.prefabs[k], def: (k) => (index.prefabs[k] ? { isLoop: index.prefabs[k].looping, spawn: 2 } : null), index: async () => index, preload: async (keys) => keys.length, defs: new Map() },
     spawn(key, place, opts) {
-      const h = { key, place, opts, stopped: false, get alive() { return !this.stopped; }, stop() { this.stopped = true; }, kill() { this.stopped = true; } };
+      const h = { key, place, opts, stopped: false, done: false, get alive() { return !this.stopped && !this.done; }, stop() { this.stopped = true; }, kill() { this.stopped = true; } };
       spawned.push(key); handles.push(h);
       return h;
     },
@@ -310,6 +310,69 @@ describe('enemy and summon skills of index v2', () => {
     b.form = 'reborn';
     frame(); w.enemyCast(b, 0); frame(); w.attack(b, o, 'none', 2);
     assert.ok(spawned.includes('bash_reborn'), 'the Reborn copy');
+  });
+
+  test("a window whose rows still play is not replaced by another of its slots; its own slot re-casting does replace", async () => {
+    const { w, spawned, view, frame } = await setup();
+    const two = view(1, 'enemy_601_two', 6);
+    frame();
+    w.enemyCast(two, 0);
+    const first = w.skills.of(two).ewin;
+    assert.equal(first.slot, 0, 'slot 0 opens its window');
+    assert.deepEqual(spawned, ['two_a'], "its own rows play");
+    frame();
+    w.enemyCast(two, 1);
+    assert.equal(w.skills.of(two).ewin, first, "another slot's cast does not cut it: the window keeps playing");
+    assert.deepEqual(spawned, ['two_a'], "and slot 1's rows do not play over it");
+    w.enemyCast(two, 0);
+    assert.notEqual(w.skills.of(two).ewin, first, "the same slot again is that skill's own cadence: it replaces its window");
+    assert.deepEqual(spawned, ['two_a', 'two_a']);
+  });
+
+  test('a window gives way once its rows have finished, and past the bound (no skill starves the others)', async () => {
+    const { w, spawned, handles, view, frame, ofx } = await setup();
+    const two = view(1, 'enemy_601_two', 6);
+    frame(); w.enemyCast(two, 0);
+    frame();
+    handles.find((h) => h.key === 'two_a').done = true;          // its effect is over
+    w.enemyCast(two, 1);
+    assert.equal(w.skills.of(two).ewin.slot, 1);
+    assert.deepEqual(spawned, ['two_a', 'two_b']);
+    // still playing, but older than ENEMY_HOLD_S: the next slot's cast opens (no skill starves the others)
+    handles.find((h) => h.key === 'two_b').done = true;
+    two.anim = SKILL_ANIM;                                        // the snapshot's anim keeps it from its own close
+    w.enemyCast(two, 0);
+    const held = w.skills.of(two).ewin;
+    assert.equal(held.slot, 0, 'slot 0 opens again');
+    ofx.time += 3;
+    frame();
+    w.enemyCast(two, 1);
+    assert.notEqual(w.skills.of(two).ewin, held, 'past ENEMY_HOLD_S the next slot opens');
+    assert.equal(w.skills.of(two).ewin.slot, 1);
+  });
+
+  test('a second enemy has a window of its own (the hold is per enemy, never across them)', async () => {
+    const { w, spawned, view, frame } = await setup();
+    const a = view(1, 'enemy_601_two', 6), b = view(2, 'enemy_601_two', 8);
+    frame();
+    w.enemyCast(a, 0); w.enemyCast(b, 1);
+    assert.equal(w.skills.of(a).ewin.slot, 0);
+    assert.equal(w.skills.of(b).ewin.slot, 1, 'the other enemy opened its own window');
+    assert.deepEqual(spawned, ['two_a', 'two_b']);
+  });
+
+  test('a row the window already plays is not spawned again onto its live instance', async () => {
+    const { w, spawned, handles, view, frame } = await setup();
+    const b = view(1, 'enemy_603_bash', 6), o = view(2, 'char_500_mh', 5);
+    frame(); w.enemyCast(b, 0);
+    frame(); frame();                       // the frame the window opened, then the stand-in of its attack rows
+    assert.equal(count(spawned, 'bash_cast'), 1);
+    w.attack(b, o, 'none', 1);
+    assert.equal(count(spawned, 'bash_cast'), 1, 'the blow does not restart the wave the window already plays');
+    handles.find((h) => h.key === 'bash_cast').done = true;        // its effect is over
+    frame();                                                        // its own frame: a later blow
+    w.attack(b, o, 'none', 2);
+    assert.equal(count(spawned, 'bash_cast'), 2, 'a later blow, its effect finished, plays it again');
   });
 
   test("a summon's skill: its record's, else the only one its unit has; it plays like an operator's", async () => {

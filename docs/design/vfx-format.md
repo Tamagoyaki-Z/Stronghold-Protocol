@@ -1203,7 +1203,12 @@ index.json — version 1 and the version 2 fields (§33.12, §33.15; Phase 3c) �
   an ability fires) [ASSUMED]; it plays the plan's start, range and loops, the enemy's attacks in it play the skill's
   attack rows (a skill of attack rows with no 'atk' in its first frame — the kit flies its own shot — plays that
   attack's cast and range rows [ASSUMED]), and it ends — its loops stop, its end plays — once the anim leaves SKILL and
-  its time is over (the event's `dur`, else 0.3 s [ASSUMED]), or on the enemy's death or leak. A use's `mode` picks the
+  its time is over (the event's `dur`, else 0.3 s [ASSUMED]), or on the enemy's death or leak. **While a window still
+  plays — one of the rows it played is alive, and it opened less than `ENEMY_HOLD_S` (2 s) ago — another of that
+  enemy's slots does not replace it** (its cast is stood down; the same slot re-casting is that skill's own cadence and
+  does), and a row the window already plays is not spawned again onto its live instance: a boss's blow re-spawning its
+  6.5-8 s cast effect (昆图斯 大潮) restarted the same effect ~0.5 s after the cast. Per enemy; another enemy, an
+  operator's skill and the sim's own schedule are untouched. A use's `mode` picks the
   copy of the enemy's current mode; `inModes` is not needed. Not drawn: the skill's effects on others (`on: 'targets'`:
   no event names them).
 * **Summons' skills** (v2) play like an operator's.

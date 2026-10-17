@@ -111,6 +111,9 @@ const DIRS = ['UP', 'RIGHT', 'DOWN', 'LEFT'];
 const CAST_START = new Set([0, 2]);
 /** Battle seconds an enemy's skill window outlasts its start before the snapshot's anim may end it (the sim's 0.5 s). */
 const ENEMY_GRACE = 0.3;
+/** Battle seconds an enemy's skill window keeps another of its slots from replacing it (a bound: a window whose rows
+ * never end must not starve the enemy's other skills; the window's own rows decide the rest). */
+export const ENEMY_HOLD_S = 2;
 
 /**
  * The index mode a unit's form (a sim setForm / a 傀儡师's 替身 — shared/protocol.js fxForm) fights in: the mode the data
@@ -610,10 +613,13 @@ export class SkillFx {
    * the snapshot's anim leaves SKILL — or the enemy dies); attacks in the window use its attack rows (state).
    */
   _enemyCast(U, v, entry, hold = ENEMY_GRACE) {
+    // another slot's cast does not cut a window that is still playing (its own rows are alive and it is young enough):
+    // the running performance plays out. The same slot re-casting is that skill's own cadence and does replace.
+    if (U.ewin && U.ewin.slot !== entry.slot && this._enemyHolds(U)) return U.ewin.draws;
     if (U.ewin) this._enemyEnd(U, v);
     const plan = this._enemyPlan(U, entry, v);
     const at = this.w.ofx.time;
-    const win = { plan, slot: entry.slot, at, until: at + hold, loops: [], draws: false, startFrame: this.frame, shown: false };
+    const win = { plan, slot: entry.slot, at, until: at + hold, loops: [], live: new Map(), draws: false, startFrame: this.frame, shown: false };
     U.ewin = win;
     U.startFrame = this.frame;
     U.atkN = 0;
@@ -621,9 +627,29 @@ export class SkillFx {
       const h = this._play(e, v);
       if (!h) continue;
       win.draws = true;
+      this._enemyPlayed(win, this._key(e, v), h);
       if (e.hold === 'skill') win.loops.push(h); else this._keep(U, e, h);
     }
     return win.draws;
+  }
+
+  /** Remember a row a window played: `live` holds its latest instance, so a still-playing row is not spawned twice. */
+  _enemyPlayed(win, key, h) { const k = lc(key); if (k) win.live.set(k, h); }
+
+  /** Whether the enemy's window already has `key` playing: a row of it is not re-spawned onto a live instance. */
+  _enemyLive(U, key) { const h = U && U.ewin ? U.ewin.live.get(lc(key)) : null; return !!(h && h.alive); }
+
+  /**
+   * Whether the enemy's open window is still playing: one of the rows it played is alive and it opened less than
+   * ENEMY_HOLD_S ago. Another of its slots then waits instead of cutting the running performance short (the sim's own
+   * schedule is untouched: this only decides whether the client opens a second window on it).
+   */
+  _enemyHolds(U) {
+    const win = U.ewin;
+    if (!win) return false;
+    if (this.w.ofx.time - win.at >= ENEMY_HOLD_S) return false;
+    for (const h of win.live.values()) if (h.alive) return true;
+    return false;
   }
 
   /** The window ends: its loops stop (with their fade), its end plays. */
@@ -711,7 +737,12 @@ export class SkillFx {
         if ((phase === 'start' && !first) || (phase === 'strike' && first) || (onTarget && !tgt)) continue;
         if ((e.firstOnly && nth > 0) || (e.afterFirst && nth === 0)) continue;
         const skip = phase === 'start' ? info.skip : 0;
+        const key = this._key(e, onTarget ? tgt : src);
+        // a row of the enemy's own open window that is still playing is not spawned again: every blow of a boss
+        // re-spawning its 6.5-8 s cast effect (大潮's wave) restarted the same effect half a second after the cast
+        if (!onTarget && this._enemyLive(sk.U, key)) continue;
         const h = onTarget ? this._play(e, tgt, { toward: beyond(src, tgt), flipFrom: src, skip }) : this._play(e, src, { toward: tgt, skip, strike: phase !== 'start' });
+        if (h && !onTarget && sk.U && sk.U.ewin) this._enemyPlayed(sk.U.ewin, key, h);
         if (h && (e.hold === 'cast' || e.loop)) later(this.w.ofx, phase === 'start' && info.left > 0 ? Math.min(3, info.left) : SKILL_CAST_S, () => h.stop());
       }
     }
@@ -862,7 +893,11 @@ export class SkillFx {
         if (win && !win.shown && this.frame > win.startFrame) {
           win.shown = true;
           const a = win.plan.attacks[0];
-          if (a && U.atkN === 0 && !win.draws) for (const e of uniq([...a.cast, ...a.range])) { const h = this._play(e, v); if (h) this._keep(U, e, h); }
+          if (a && U.atkN === 0 && !win.draws) for (const e of uniq([...a.cast, ...a.range])) {
+            if (this._enemyLive(U, this._key(e, v))) continue;
+            const h = this._play(e, v);
+            if (h) { this._keep(U, e, h); this._enemyPlayed(win, this._key(e, v), h); }
+          }
         }
         U.prevAnim = anim;
       }
