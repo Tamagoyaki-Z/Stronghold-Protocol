@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import * as helpers from '../shared/assetCache.js';
+import * as importHelpers from '../public/js/importCache.js';
 
 const origin = 'https://game.test';
 const body = new TextEncoder().encode('atlas bytes');
@@ -11,7 +12,7 @@ const entry = { url: '/assets/model.atlas', bytes: body.length, sha256, type: 't
 const catalog = { schema: 1, version: await helpers.sha256Hex(new TextEncoder().encode(JSON.stringify({ schema: 1, files: [entry] }))), files: [entry], totalFiles: 1, totalBytes: body.length,
   complete: true, missing: [], app: 'test' };
 const source = (await fs.readFile(new URL('../public/asset-cache-sw.js', import.meta.url), 'utf8'))
-  .replace(/import \{[\s\S]*?\} from '\/shared\/assetCache\.js';/, '');
+  .replace(/import \{[\s\S]*?\} from '[^']+';/g, '');
 
 async function fixture({ slowMetadata = false, blockPassive = false } = {}) {
   const handlers = new Map(), stores = new Map(), windows = new Map();
@@ -34,10 +35,10 @@ async function fixture({ slowMetadata = false, blockPassive = false } = {}) {
     async delete(name) { return stores.delete(name); },
   };
   const clients = { async matchAll() { return [...windows.values()]; }, async claim() {} };
-  const self = { location: { origin }, clients, navigator: { locks: { async request(_name, _options, fn) {
+  const self = { location: { origin }, clients, skipWaiting: async () => {}, navigator: { locks: { async request(_name, _options, fn) {
     locks++; return fn(blockPassive ? null : {});
   } } }, addEventListener(name, callback) { handlers.set(name, callback); } };
-  const context = vm.createContext({ ...helpers, self, caches: storage, fetch: async () => {
+  const context = vm.createContext({ ...helpers, ...importHelpers, self, caches: storage, fetch: async () => {
     network++;
     // Fetch returns decoded bytes, while Content-Length still describes the compressed wire body.
     return new Response(body, { headers: { 'Content-Type': 'text/plain', 'Content-Encoding': 'gzip', 'Content-Length': '7' } });

@@ -1,8 +1,8 @@
-// Imported art in Cache Storage, and the predicate the classic worker in public/sw.js duplicates.
+// Imported art in Cache Storage: the predicate the origin's single worker (public/asset-cache-sw.js) serves it with.
 //
-// Keep IMPORTED_ASSET_CACHE, IMPORTED_ASSET_CACHE_PREFIX and IMPORTED_ASSET_PATH byte-for-byte in sync with
-// public/sw.js. That file is a classic script (not a module) so Firefox 108 and Safari 16.4 can register it; it
-// cannot import this module. A unit test fails if the two copies disagree.
+// That worker imports this module, so these three names are the copy in use. public/sw.js keeps a classic copy of
+// them but is no longer registered: two registrations at scope '/' replace each other, and the page is then left
+// with a worker that never answers the asset-cache coordinator (the 0.3.0 hang on 正在检查缓存).
 //
 // The worker serves only same-origin GET of a content-hashed /assets/, /fonts/ or /media/ URL. A hit comes from
 // this cache. A miss goes to the network and is not written here. HTML, scripts, /data/, /sim/ and /ws are never
@@ -17,6 +17,15 @@ export const IMPORTED_ASSET_CACHE_PREFIX = 'sp-imported-assets-';
 
 /** Pathname of a URL this cache may answer. The hash is the same 16 hex digits as shared/assetPaths.js. */
 export const IMPORTED_ASSET_PATH = /^\/(?:assets|fonts|media)\/~[0-9a-f]{16}\//;
+
+/** The one service worker this origin registers. Both boot (so an imported pack is served without ever opening
+ * the panel) and the asset-cache panel (public/js/assetCache.js) go through this script: registrations are keyed
+ * by scope, so a second script at the same scope would replace this one. */
+export const ASSET_CACHE_SW_URL = '/asset-cache-sw.js';
+
+/** Scope of ASSET_CACHE_SW_URL. /assets/, /fonts/ and /media/ are sibling prefixes, so only the origin root
+ * covers every path the worker serves (shared/assetCache.js safeAssetPath). */
+export const ASSET_CACHE_SW_SCOPE = '/';
 
 /**
  * Whether a request should be answered from the import cache.
@@ -48,13 +57,22 @@ export function importSupport(nav = globalThis.navigator, secure = globalThis.is
 }
 
 /**
- * Register public/sw.js. Failures are swallowed: a missing worker must not stop the game.
+ * Register ASSET_CACHE_SW_URL and return its registration. The repository's only call into the
+ * registration API: one script, one scope, so no worker can evict another.
+ * @returns {Promise<ServiceWorkerRegistration>}
+ */
+export function registerAssetCacheWorker(nav = globalThis.navigator, url = ASSET_CACHE_SW_URL) {
+  return nav.serviceWorker.register(url, { scope: ASSET_CACHE_SW_SCOPE, type: 'module', updateViaCache: 'none' });
+}
+
+/**
+ * Boot's entry point for that same worker. Failures are swallowed: a missing worker must not stop the game.
  * Call only from boot. Unit tests import the downloader and must not register a worker as a side effect.
  * @returns {Promise<boolean>}
  */
 export function registerImportedAssetWorker(nav = globalThis.navigator, secure = globalThis.isSecureContext) {
   if (!secure || !nav?.serviceWorker?.register) return Promise.resolve(false);
-  return nav.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(() => true, () => false);
+  return registerAssetCacheWorker(nav).then(() => true, () => false);
 }
 
 /** Content-Type stored with an imported response, chosen from the URL the game will request. */

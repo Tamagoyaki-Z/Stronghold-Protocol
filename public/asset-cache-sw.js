@@ -1,8 +1,12 @@
+// The origin's one service worker, registered at scope '/'. It serves two disjoint concerns:
+//   1. the pack a player imported (the branch public/sw.js owned before it was retired; see js/importCache.js);
+//   2. this origin's own assets, verified against a per-client pinned catalog.
 // Asset-only cache: HTML, application code, data, APIs and private announcements never enter it.
 // Content hashes let unchanged files survive upgrades; per-client catalogs pin live matches.
 import { ASSET_CACHE_NAME, ASSET_CACHE_META, assetContentKey, catalogURLMap,
   verifyAssetCatalog, decodedAssetPath, isVerifiedAssetResponse, validatedCacheHeaders,
   parseAssetRange, sha256Hex } from '/shared/assetCache.js';
+import { IMPORTED_ASSET_CACHE, IMPORTED_ASSET_CACHE_PREFIX, shouldServeImportedAsset } from '/js/importCache.js';
 
 const origin = self.location.origin;
 const catalogPath = (version) => `${origin}/__sp_asset_cache__/catalog/${version}`;
@@ -14,9 +18,18 @@ let passiveActive = 0;
 let lastNotify = 0;
 let messages = Promise.resolve();
 
-// Do not interrupt existing pages on an SW update. A new version activates naturally when old
-// clients are gone; first installation can claim current pages without requiring a reload.
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+// Take the scope over at once. A page whose retired classic worker (public/sw.js) still controls it would
+// otherwise keep posting the catalog protocol to a worker that never answers, and this worker would wait
+// until every tab closed — the panel would stay on 正在检查缓存. Activating mid-session is safe: every served
+// byte is content-addressed and the catalog/pin metadata lives in Cache Storage, not in worker memory.
+self.addEventListener('install', (event) => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', (event) => event.waitUntil((async () => {
+  const names = await caches.keys();
+  await Promise.all(names
+    .filter((name) => name.startsWith(IMPORTED_ASSET_CACHE_PREFIX) && name !== IMPORTED_ASSET_CACHE)
+    .map((name) => caches.delete(name)));
+  await self.clients.claim();
+})()));
 
 async function readJSON(cache, path) {
   try { return await (await cache.match(path))?.json(); } catch { return null; }
@@ -194,8 +207,25 @@ async function fetchAsset(event, path) {
   } catch { return fetch(event.request); }
 }
 
+/** Answer one request from the imported pack: the exact key, no query, and never a cached network answer. */
+async function serveImportedAsset(request) {
+  const url = new URL(request.url);
+  // The exact key: an import stores each URL without a query, so the path is the key. Matching with ignoreSearch would make
+  // Chrome scan every entry — about 4 s per request once a whole pack (some 43,000 entries) is imported.
+  const cache = await caches.open(IMPORTED_ASSET_CACHE);
+  const hit = await cache.match(url.origin + url.pathname);
+  if (hit) return hit;
+  // Do not cache the network response. The browser's own HTTP cache still applies to this fetch.
+  return fetch(request);
+}
+
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
-  const path = decodedAssetPath(event.request.url, origin);
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  // A player who imported this origin's art must be served those bytes, so the imported pack wins. A Range
+  // request falls through to the catalog path (which answers 206 itself) or the network, keeping audio
+  // seeking on the server exactly as public/sw.js left it.
+  if (shouldServeImportedAsset(request, origin)) { event.respondWith(serveImportedAsset(request)); return; }
+  const path = decodedAssetPath(request.url, origin);
   if (path) event.respondWith(fetchAsset(event, path));
 });

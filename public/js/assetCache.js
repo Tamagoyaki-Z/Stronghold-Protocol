@@ -2,6 +2,7 @@
 // All expensive work runs in a dedicated worker. UI consumes codes through i18n, never raw errors.
 import { ASSET_CACHE_META, ASSET_CACHE_LATEST_KEY, MAX_MANIFEST_BYTES, verifyAssetCatalog,
   assetCacheCatalogKey, validateAssetCacheSummary, catalogMatchesSummary, assetCacheError } from '../../shared/assetCache.js';
+import { ASSET_CACHE_SW_URL, registerAssetCacheWorker } from './importCache.js';
 
 const initialState = (env) => {
   const supported = !!(env.isSecureContext && env.caches && env.navigator?.serviceWorker
@@ -17,7 +18,7 @@ const initialState = (env) => {
 };
 
 export function createAssetCacheManager({ environment = globalThis, doFetch, workerURL = '/js/asset-cache-worker.js',
-  swURL = '/asset-cache-sw.js', statusURL = '/api/asset-cache/status',
+  swURL = ASSET_CACHE_SW_URL, statusURL = '/api/asset-cache/status',
   catalogURL = '/api/asset-cache/catalog', catalogUpdateURL = '/api/asset-cache/catalog-update' } = {}) {
   const env = environment;
   const state = initialState(env);
@@ -241,7 +242,9 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
     initializing = (async () => {
       patch({ phase: 'initializing', error: null });
       try {
-        registration = await timeLimited(env.navigator.serviceWorker.register(swURL, { scope: '/', type: 'module', updateViaCache: 'none' }),
+        // The same script and scope boot registers (importCache.js): one worker answers both the imported pack
+        // and the server catalog, so this call joins that registration instead of replacing its script.
+        registration = await timeLimited(registerAssetCacheWorker(env.navigator, swURL),
           15000, 'ASSET_CACHE_SW_UNAVAILABLE');
         registration = await timeLimited(env.navigator.serviceWorker.ready, 15000, 'ASSET_CACHE_SW_UNAVAILABLE');
         env.navigator.serviceWorker.addEventListener('message', onSWMessage);

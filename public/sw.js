@@ -1,4 +1,8 @@
 // Classic service worker for art a player imported on this origin.
+//
+// RETIRED FROM REGISTRATION (0.3.0 hang): /asset-cache-sw.js is the origin's only worker at scope '/', and it
+// carries this file's fetch branch. Do not register this script — a second registration at '/' would replace the
+// asset-cache worker and the panel would hang on 正在检查缓存 again. The constants below stay as the classic copy.
 // Keep these three lines in sync with public/js/assetCache.js (that module documents why this file is not a module).
 const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v1';
 const IMPORTED_ASSET_CACHE_PREFIX = 'sp-imported-assets-';
