@@ -35,20 +35,31 @@ test('four already displayed operator offers may exceed stock; selling first rep
   }
   m.dispose();
 });
-test('a duplicate draft card becomes unavailable when the preceding player exhausts equipment stock', () => {
+// 【本服主动放宽，官方为拒绝】 The official rule refuses a draft equipment card whose shared stock ran out while the
+// card was already on screen ("equipment from any source occupies stock", docs/history/0.3.0.md §32.14.24). This fork
+// treats a DISPLAYED 机变 equipment card like a shop slot (#624) or a reward offer (#650): the pick is accepted, the
+// copy is granted, and the shortfall is recorded as debt on the group's pool (pool.owe, repaid when a copy leaves play).
+test('a duplicate draft card is granted past shared stock and records the shortfall as debt (本服主动放宽，官方为拒绝)', () => {
   const h = makeMatch({ mode: 'coop', humans: 2, seed: 11, fake: true }).start().toPrep();
   const m = h.m, a = h.ps('p_0'), b = h.ps('p_1');
-  a.acquireItem(PACK);
+  a.acquireItem(PACK); assert.equal(m.itemPool.left(PACK), 1);
   m.phase = PHASE.SP_DRAFT;
   const groups = m.makeDraftGroups({ shuffle: false });
   Object.assign(groups[0], { cards: [PACK, PACK, 'chess_item_1_01_e_a'].map((id, idx) => ({ idx, id, kind: 'item' })),
     order: ['p_0', 'p_1'], idx: 0, taken: {}, untimed: true });
   m.sp = installDraftFacade({ groups, picks: {}, untimed: true }, ['cards', 'order', 'idx', 'taken']);
   assert.ok(m.pickCard(a, 0).ok); assert.equal(m.spTurn(), 'p_1');
-  assert.equal(m.pickCard(b, 1).error, 'SOLD_OUT'); assert.equal(m.sp.picks.p_1, undefined);
-  const card = m.publicView().sp.cards[1]; assert.equal(card.soldOut, true);
-  assert.equal(cardPickable({ turnPid: 'p_1', pickOf: new Map() }, card, { myId: 'p_1', solo: false }), false);
-  assert.ok(m.pickCard(b, 2).ok); m.dispose();
+  assert.equal(m.itemPool.left(PACK), 0, "the first pick merged into a's normal copy and used the last stock");
+  const card = m.publicView().sp.cards[1];
+  assert.equal(card.soldOut, false, 'a displayed card is never 库存不足 any more');
+  assert.equal(cardPickable({ turnPid: 'p_1', pickOf: new Map() }, card, { myId: 'p_1', solo: false }), true);
+  assert.ok(m.pickCard(b, 1).ok, 'the duplicate is granted past stock instead of being refused');
+  assert.equal(m.sp.picks.p_1, 1);
+  assert.equal(m.itemPool.debtOf(PACK), 1, 'the copy that did not fit is owed');
+  assert.equal(m.itemPool.held(PACK), 3, 'a holds the golden (two copies), b the overdrawn normal');
+  assert.equal(m.itemPool.left(PACK), 0);
+  assert.equal(m.spTurn(), null, 'both players of the group have picked');
+  checkInvariants(m); m.dispose();
 });
 test('measured operator capacities and exceptions: co-op doubles shared stock and each player\'s private 自选 stock (#650)', () => {
   const solo = new GameData(DATA, 'mode_single_normal'), coop = new GameData(DATA, 'mode_multi_normal');

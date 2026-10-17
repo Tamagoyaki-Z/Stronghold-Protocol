@@ -351,3 +351,15 @@
 - 保留 D017 的实际空席最少优先、容量偏好回退、断线保留置底、分页与两秒合并广播；新增字段使用 compact-v1 扩展，新消息走 JSON fallback，不改变已发布位置表。
 - 原因：用户希望区分在线人数和实际游玩人数，并能关闭公开组队而保留邀请码邀请及公开观看；通过服务器规则和独立标识实现，而非只隐藏按钮。
 - 依据：[本次任务记录](records/2026-10-12-02-lobby-access-spectate.md)及用户三项确认；入口 `server/lobbyDiscovery.js`、`Lobby.setMatchmaking`、`public/js/ui/lobbyDiscovery.js`、`public/js/screens/room.js`。
+
+## D033
+
+**生效：机变（SP_DRAFT）的装备卡按「已展示的卡」处理——共享库存不足不再拒绝，改为超卖并记 `debt`；官方规则为拒绝。**
+
+- 用户拍板的行为变更：本服主动放宽官方「装备来自任何来源都占用库存」的限制。触发场景是第 11 回合机变（`shopDraft.rounds: [11]`）的机密商店装备卡——一页上同一件装备可以占多个槽位（实测 seed 11 的 R11 一页出现同一 id ×3），前序玩家取走最后的份数后，余下卡面在最需要的时候被拒。
+- 真实实现路径（排查结论，注意与直觉不同）：**卡片拾取校验**在原 `spCardAvailable`（[spDraft.js](../../server/match/match/spDraft.js)），其中 `canGain` 门槛已移除，只保留「该卡位未被取走」；**实际发放**走注册的 `choice:<id>` 处理器 [server/sim/content/choices.js](../../server/sim/content/choices.js) 的 `ITEM.onChoicePick` → `ctx.grantItem` → [effectsMeta.grantItem](../../server/match/effectsMeta.js) → `ps.acquireItem`（`displayed` 由此透传）。[server/match/choices.js](../../server/match/choices.js) 的 `applyDefault` 是注册处理器缺席时的 fallback，同样已带 `displayed: true`。
+- 生效范围：只有**已展示**的机变装备卡可超卖。共享库存仍决定**能抽到什么**——`spDraft.enterSpDraft` 继续用 `itemAvailable`/`canGain` 过滤，因此 0 库存的装备不会被抽到卡面上，只有已经显示的卡能超卖。`m.public.sp.cards[].soldOut` 恒为 `false`，客户端不再显示「库存不足」也不再禁用卡片。
+- 连带变化：「靠共享库存耗尽提前结束一页」的行为随之消失——现在只有该页所有卡位都被取走才 `done`。旧契约的两条测试断言已按新契约重写（`test/match/shared-stock.test.js`、`test/match/group-stock.test.js`，均注明「本服主动放宽，官方为拒绝」），未删除、未 skip。
+- 未改动：机变战术卡的 `global_special_choice_gain_equip`（列装）保持原样——它经 `rollItemId` 按库存过滤，静默不发、不记 `debt`；普通赠与、整备以及商店中「非已展示」的一切来源仍按库存拒绝。
+- 原因：装备卡既然已经以卡面形式展示给玩家，此时以库存不足拒绝等于「看得到拿不到」，并且会把整页提前判 `done` 让玩家白白失去一次选择；与上游 #624（商店槽）、#650（奖励页）对「已展示」的处理保持一致。
+- 依据：[多人容量扩展](../PLAYER_CAPACITY.md)、[共享库存](../META.md)、[官方 0.3.0 §32.14.24](../history/0.3.0.md)；实测（`mode_multi_abyss`、4 人、seed 11、一页 4 张同 id 装备、共享库存 2）：改前 `got=2/4, debt=0`（后两人 `NOT_YOUR_TURN`，该页提前结束）、改后 `got=4/4, debt=2`、无 `库存不足` 提示。

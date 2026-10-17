@@ -159,13 +159,16 @@ export class MatchViews {
         groups: s.groups.map((g) => ({
           id: g.id, playerIds: g.playerIds.slice(), order: g.order.slice(),
           family: g.family, name: g.name, desc: g.desc, eventId: g.eventId,
-          cards: g.cards.map((c) => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPoolFor(g.playerIds[0]).canGain(c.id) })),
+          // 【本服主动放宽】 A displayed 机变 card is never sold out: equipment cards overdraw and record debt
+          // (spDraft.spCardAvailable / choices.js applyDefault). Kept on the wire as false so the client's cardPickable and its
+          // 库存不足 badge stay honest about what the server will accept.
+          cards: g.cards.map((c) => ({ ...cardView(c), soldOut: false })),
           turn: g.done ? null : g.order[g.idx] ?? null,
           picks: { ...g.picks }, taken: { ...g.taken }, turnDeadline: g.turnDeadline || 0,
           turnSeconds: g.turnSeconds || 0, untimed: !!g.untimed, done: !!g.done,
         })),
         family: s.family, name: s.name, desc: s.desc, eventId: s.eventId,
-        cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPool.canGain(c.id) })), order: s.order.slice(),
+        cards: s.cards.map(c => ({ ...cardView(c), soldOut: false })), order: s.order.slice(),
         turn: this.spTurn(), picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed,
         turnDeadline: s.turnDeadline || 0, turnSeconds: s.turnSeconds || 0,
       };

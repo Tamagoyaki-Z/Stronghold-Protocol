@@ -620,6 +620,9 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
         noPool,
         deferMerge: ps._deferItemMerge > 0,
         requirePool: opts.requirePool !== false,
+        // 【本服主动放宽】 an effect that grants an ALREADY DISPLAYED card (the 机变 draft's equipment card, §#624)
+        // may overdraw the shared stock and record the debt; every other grant still refuses.
+        displayed: opts.displayed === true,
       });
       return p ? view(p) : null;
     },

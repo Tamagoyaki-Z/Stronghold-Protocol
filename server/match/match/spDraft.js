@@ -49,9 +49,16 @@ export class MatchSpDraft {
     return g && !g.done ? g.order[g.idx] ?? null : null;
   }
 
+  /**
+   * Whether a 机变 position can still be taken. 【本服主动放宽】Only `taken` blocks it: an equipment
+   * card that is ALREADY ON SCREEN follows the shop-slot rule of GitHub #624/#650 — choices.js applyDefault grants it
+   * with `displayed: true`, so it overdraws the shared stock and records the debt (pool.owe) instead of being refused.
+   * The official rule is the opposite ("equipment from any source occupies stock", docs/history/0.3.0.md §32.14.24);
+   * this fork deliberately relaxes it for the 机变 draft. Generation still filters by canGain (itemAvailable below),
+   * so only cards that were drawn from real stock and are therefore displayed can overdraw.
+   */
   spCardAvailable(card, group = this.spGroup()) {
-    return !!card && !!group && group.taken[card.idx] == null &&
-      (card.kind !== 'item' || this.itemPoolFor(group.playerIds[0]).canGain(card.id));
+    return !!card && !!group && group.taken[card.idx] == null;
   }
 
   startSpTurn(group = this.spGroup()) {

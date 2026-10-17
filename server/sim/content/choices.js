@@ -206,7 +206,11 @@ const ITEM = {
   onChoicePick(ctx, ev) {
     if (ctx.source.kind !== 'choice' || !ev || !ev.card || ev.forTeammate) return;
     if (!ctx.gd.item(ev.card.id)) return;
-    ctx.grantItem(ev.card.id, { source: 'choice' });
+    // 【本服主动放宽】 An equipment card that is ALREADY ON SCREEN is never refused for shared stock: it follows
+    // the shop-slot rule of GitHub #624/#650 — it overdraws the group's pool and records the debt (pool.owe) instead.
+    // The official rule is the opposite ("equipment from any source occupies stock", docs/history/0.3.0.md §32.14.24);
+    // this fork relaxes it for the 机变 draft's 道具补给 / 机密商店 equipment cards (docs/PLAYER_CAPACITY.md).
+    ctx.grantItem(ev.card.id, { source: 'choice', displayed: true });
   },
 };
 

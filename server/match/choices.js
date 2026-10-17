@@ -477,7 +477,7 @@ function applyDefault(m, ps, card) {
     return;
   }
   if (card.kind === 'item') {
-    ps.acquireItem(card.id, { source: 'choice' });
+    ps.acquireItem(card.id, { source: 'choice', displayed: true });
     return;
   }
   if (card.kind !== 'tactic') return;

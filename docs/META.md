@@ -1013,9 +1013,13 @@ clamped at 0, so later rolls and `canGain` still skip an empty item until the de
 Destroying, consuming, a temp wipe and elimination repay that debt first. Selling a carrier returns equipment to the
 hand and does not repay. 整备 upgrades the purchased item only when `left` still has the golden's second copy;
 otherwise the item stays normal and the charge remains. A random grant is still refused.
-`m.public.sp.cards[].soldOut` disables a 机变 item card when a preceding choice used the final copy; timer/bot choices
-use the same availability. Those cards are not already-shown shop or reward cards, so they stay stock-limited.
-Non-shop effect-only equipment is unlimited.
+【本服主动放宽，官方为拒绝】 `m.public.sp.cards[].soldOut` is always `false`: a 机变 equipment card counts as an
+already-shown card, so it follows the shop-slot/reward rule above — the pick is accepted, the copy is granted and the
+shortfall is recorded as `debt` ([D033](development/DECISIONS.md#d033)). A card whose stock ran out neither marks itself
+`库存不足` nor closes its page early, so every player of the group still gets a choice. The official rule is the
+opposite (装备来自任何来源都占用库存, [0.3.0 §32.14.24](history/0.3.0.md), 官方路标月报#2). Shared stock still decides
+what may be DRAWN — `spDraft.enterSpDraft` passes `itemAvailable`, so an item at 0 availability never reaches a page;
+only a card already displayed can overdraw. Non-shop effect-only equipment is unlimited.
 
 Operator capacities use measured single-player exceptions and twice those counts in co-op; DIY remains private.
 `take(..., { overdraw: true })` records full occupation, including authorized acquisitions beyond capacity.
@@ -1025,7 +1029,8 @@ Negative internal balance is a deficit, never negative available stock; selling 
 
 Fixed equipment gifts from `SERVER_GAIN_EQUIP` (卡涅利安、蜜蜡、缪尔赛思、耶拉、诗怀雅) may exceed the pool,
 including the same families awarded by 变形者. They still occupy ordinary/advanced 1/2 copies and can leave availability
-at zero after a removal, without a `debt` entry. Ordinary grants, 整备 and 机变 item cards retain their limits.
+at zero after a removal, without a `debt` entry. Ordinary grants and 整备 retain their limits; a 机变 item card does
+not ([D033](development/DECISIONS.md#d033)).
 `requirePool:false` is not a universal equipment bypass. Rockrock/Flametail's measured weighted subsets remain subject
 to shared availability (§30.2). 凯瑟琳's `pool_equip_kathe` is every shop-eligible item plus 突变细胞 (`also`), uniform
 [ASSUMED], at any 调度中心 level (#631); the shop item slot does not read `also`.

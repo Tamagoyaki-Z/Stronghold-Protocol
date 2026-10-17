@@ -153,9 +153,14 @@ function manualPages(m, cards) {
   return groups;
 }
 
-test('a team equipment tactic closes an exhausted untimed other page without resetting a page that can still choose', () => {
-  for (const { remaining, untimed } of [{ remaining: false, untimed: true }, { remaining: true, untimed: true },
-    { remaining: true, untimed: false }]) {
+/**
+ * 【本服主动放宽】 The official rule closed a 机变 page whose only equipment card had run out of shared stock
+ * (docs/history/0.3.0.md §32.14.24). After 方案 A that page stays open and its card stays pickable: shared stock only
+ * decides what may be DRAWN (spDraft.enterSpDraft itemAvailable), never whether a card already on screen may be taken.
+ * The mechanism that still closes a page is every position being taken.
+ */
+test('stock exhaustion no longer closes a 机变 page, while a fully taken page still does, without resetting another (本服主动放宽)', () => {
+  for (const untimed of [true, false]) {
     const h = makeMatch({ humans: untimed ? 1 : 10, bots: untimed ? 9 : 0, seed: 11, fake: true, data: stockData() });
     const m = h.m;
     try {
@@ -163,25 +168,36 @@ test('a team equipment tactic closes an exhausted untimed other page without res
       m.gd.effect = ((base) => (id) => id === effectId ? {
         buffs: [{ key: 'global_special_choice_gain_equip', bb: { count: 1 }, bbStr: { pool: 'test_group_item' } }],
       } : base(id))(m.gd.effect.bind(m.gd));
-      // The second and third groups each have one copy before the all-room grant. Each may accept only one more.
+      // The second and third groups each hold one of their two copies before the all-room grant: each may accept one more.
       assert.ok(m.players.get(m.poolGroups[1].playerIds[0]).acquireItem(PACK));
       assert.ok(m.players.get(m.poolGroups[2].playerIds[0]).acquireItem(PACK));
       const groups = manualPages(m, [
         [{ kind: 'tactic', id: effectId, team: true }, { kind: 'item', id: SMALL }],
-        [{ kind: 'item', id: PACK }, ...(remaining ? [{ kind: 'item', id: SMALL }] : [])],
+        [{ kind: 'item', id: PACK }, { kind: 'item', id: SMALL }],
         [{ kind: 'item', id: SMALL }],
       ]);
-      const other = groups[1], unaffected = groups[2];
-      const clock = { token: other.token, timer: other.timer, deadline: other.turnDeadline };
-      const unaffectedClock = { token: unaffected.token, timer: unaffected.timer, deadline: unaffected.turnDeadline };
+      const drained = groups[1], last = groups[2];
+      const clock = { token: drained.token, timer: drained.timer, deadline: drained.turnDeadline };
+      const lastClock = { token: last.token, timer: last.timer, deadline: last.turnDeadline };
       assert.ok(groups.every((g) => g.untimed === untimed));
       assert.ok(m.pickCard(h.ps('p_0'), 0).ok);
-      assert.equal(m.itemPoolFor(other.playerIds[0]).left(PACK), 0);
-      assert.equal(m.publicView().sp.groups[1].cards[0].soldOut, true);
-      assert.equal(other.done, !remaining);
-      assert.deepEqual({ token: unaffected.token, timer: unaffected.timer, deadline: unaffected.turnDeadline }, unaffectedClock);
-      if (remaining) assert.deepEqual({ token: other.token, timer: other.timer, deadline: other.turnDeadline }, clock);
-      else assert.equal(m.spTurn(other.playerIds[0]), null);
+      // The team grant drained the second group's shared stock for PACK …
+      assert.equal(m.itemPoolFor(drained.playerIds[0]).left(PACK), 0);
+      // … but a card already on screen is still takeable: no 库存不足, no early close, and no clock reset.
+      assert.equal(m.publicView().sp.groups[1].cards[0].soldOut, false, 'stock exhaustion never marks a displayed card sold out');
+      assert.equal(drained.done, false, 'stock exhaustion no longer closes the page');
+      assert.notEqual(m.spTurn(drained.playerIds[0]), null, 'the second group still has a turn');
+      assert.deepEqual({ token: drained.token, timer: drained.timer, deadline: drained.turnDeadline }, clock,
+        'a page that can still choose keeps its clock');
+      assert.deepEqual({ token: last.token, timer: last.timer, deadline: last.turnDeadline }, lastClock,
+        'an unrelated page is not reset');
+      // The still-working close: every position taken.
+      const lastTurn = m.spTurn(last.playerIds[0]);
+      assert.ok(lastTurn);
+      assert.ok(m.pickCard(m.players.get(lastTurn), 0).ok);
+      assert.equal(last.done, true, 'a page whose every position is taken still closes');
+      assert.equal(m.spTurn(last.playerIds[0]), null);
+      // Nobody overdrew: the second group's only stock change is PACK leaving play, not a granted overrun.
       assert.ok(m.order.every((ps) => m.itemPoolFor(ps).held(PACK) <= m.itemPoolFor(ps).cap(PACK)));
       checkInvariants(m);
     } finally { m.dispose(); }
