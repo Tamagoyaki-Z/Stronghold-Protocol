@@ -3,7 +3,7 @@
 //   2. this origin's own assets, verified against a per-client pinned catalog.
 // Asset-only cache: HTML, application code, data, APIs and private announcements never enter it.
 // Content hashes let unchanged files survive upgrades; per-client catalogs pin live matches.
-import { ASSET_CACHE_NAME, ASSET_CACHE_META, assetContentKey, catalogURLMap,
+import { ASSET_CACHE_NAME, ASSET_CACHE_META, ASSET_CACHE_STATS_KEY, assetContentKey, catalogURLMap,
   verifyAssetCatalog, decodedAssetPath, isVerifiedAssetResponse, validatedCacheHeaders,
   parseAssetRange, sha256Hex } from '/shared/assetCache.js';
 import { IMPORTED_ASSET_CACHE, IMPORTED_ASSET_CACHE_PREFIX, shouldServeImportedAsset } from '/js/importCache.js';
@@ -117,6 +117,9 @@ async function handleMessage(event) {
     } else if (data.type === 'ASSET_CACHE_CLEAR') {
       if (await livePlaying()) throw new Error('ASSET_CACHE_PLAYING');
       await caches.delete(ASSET_CACHE_NAME);
+      // The statistics describe a directory that no longer exists: a later panel open must not read a cleared cache
+      // as fully cached (the panel's own probe would notice, but the record is simply stale).
+      await meta.delete(origin + ASSET_CACHE_STATS_KEY);
       await broadcast({ type: 'ASSET_CACHE_UPDATED' });
       port.postMessage({ ok: true });
     } else if (data.type === 'ASSET_CACHE_PRUNE') {

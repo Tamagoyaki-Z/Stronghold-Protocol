@@ -58,6 +58,7 @@ export function cacheErrorText(code) {
     case 'ASSET_CACHE_BUSY': return t('另一个页面正在管理素材缓存，请稍后重试。');
     case 'ASSET_CACHE_PLAYING': return t('对局期间暂停批量缓存，返回大厅后可继续。');
     case 'ASSET_CACHE_DOWNLOAD_FAILED': return t('下载中断，已完成文件保留，请稍后继续。');
+    case 'ASSET_CACHE_SCAN_INCOMPLETE': return t('缓存统计暂不可用，无法安全判断缺项；已缓存文件仍会从本地读取，请稍后重试。');
     default: return t('缓存操作失败，已完成文件保留，请重试。');
   }
 }
@@ -121,8 +122,11 @@ export function AssetCacheHost() {
   const canUpdateCatalog = state.hasCatalog && !!state.serverVersion && state.version !== state.serverVersion && !state.catalogCurrent
     && state.readyFiles > 0 && state.readyBytes > 0;
   const retrySeconds = Math.max(0, Math.ceil(((state.catalogUpdateRetryAt || 0) - Math.max(now, Date.now())) / 1000));
-  const ready = state.readyFiles || 0, total = state.totalFiles || 0;
-  const percent = total ? Math.min(100, 100 * ready / total) : 0;
+  // A count the coordinator refused to claim (null) is unknown, not zero: rendering it as 0 is the whole defect.
+  const countsKnown = state.countsKnown !== false;
+  const ready = countsKnown ? state.readyFiles || 0 : 0, total = state.totalFiles || 0;
+  const percent = total && countsKnown ? Math.min(100, 100 * ready / total) : 0;
+  const statsFallback = !countsKnown || !!state.statsUnavailable;
   const run = (fn) => Promise.resolve().then(fn).catch(() => {});
   const storage = state.storage;
   const error = typeof state.error === 'string' ? state.error : state.error?.code;
@@ -146,8 +150,11 @@ export function AssetCacheHost() {
     <div class="asset-cache">
       <div class="asset-cache__summary" aria-live="polite">
         <strong>${phaseText(state.phase)}</strong>
-        <span class="num">${t('已缓存 {ready} / {total} 个文件', { ready, total })}</span>
-        <span>${t('已保存 {ready} / {total}', { ready: formatCacheBytes(state.readyBytes), total: formatCacheBytes(state.totalBytes) })}</span>
+        <span class="num" data-testid="asset-cache-counts">${t('已缓存 {ready} / {total} 个文件',
+          { ready: countsKnown ? ready : t('统计不可用'), total })}</span>
+        <span>${countsKnown
+          ? t('已保存 {ready} / {total}', { ready: formatCacheBytes(state.readyBytes), total: formatCacheBytes(state.totalBytes) })
+          : t('已保存量：统计不可用')}</span>
       </div>
       <div class="asset-cache__catalog" aria-live="polite">
         <strong data-testid="asset-cache-catalog-status">${catalogText(state)}</strong>
@@ -170,13 +177,16 @@ export function AssetCacheHost() {
       </div>
       <progress class="asset-cache__progress" max="100" value=${percent} aria-label=${t('缓存进度')}></progress>
       <div class="asset-cache__details">
-        <span>${t('仍需补齐 {n} 个文件，约 {size}', { n: state.missingFiles || 0, size: formatCacheBytes(state.missingBytes) })}</span>
+        <span>${countsKnown
+          ? t('仍需补齐 {n} 个文件，约 {size}', { n: state.missingFiles || 0, size: formatCacheBytes(state.missingBytes) })
+          : t('仍需补齐文件数：统计不可用')}</span>
         ${state.phase === 'downloading' ? html`<span>${t('当前下载速度：{speed}/s', { speed: formatCacheRate(state.speedBps) })}</span>` : null}
         ${state.importStats ? html`<span>${t('本次导入：新增 {added}，复用 {reused}，不适用 {skipped}，失败 {invalid}', {
           added: state.importStats.imported, reused: state.importStats.reused,
           skipped: state.importStats.unknown, invalid: state.importStats.invalid,
         })}</span>` : null}
       </div>
+      ${statsFallback ? html`<p class="asset-cache__warning" role="status" data-testid="asset-cache-stats-unavailable">${t('统计不可用，但缓存仍在使用。已缓存的文件仍会从本地读取，稍后会自动重新统计。')}</p>` : null}
       ${state.playing ? html`<p class="asset-cache__warning" role="status">${t('对局期间暂停批量缓存，返回大厅后可继续。')}</p>` : null}
       ${state.emergency ? html`<p class="asset-cache__warning" role="status">${cacheErrorText('ASSET_CACHE_EMERGENCY')}</p>` : null}
       ${state.serverMissingFiles > 0 ? html`<p class="asset-cache__warning">${t('服务器素材存在缺项，只能缓存当前可用文件，请联系服主补齐。')}</p>` : null}

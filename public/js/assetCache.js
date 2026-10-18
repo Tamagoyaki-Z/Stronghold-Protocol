@@ -1,7 +1,8 @@
 // Browser asset-cache coordinator; pure at import time so importing it under Node is safe.
 // All expensive work runs in a dedicated worker. UI consumes codes through i18n, never raw errors.
-import { ASSET_CACHE_META, ASSET_CACHE_LATEST_KEY, MAX_MANIFEST_BYTES, verifyAssetCatalog,
-  assetCacheCatalogKey, validateAssetCacheSummary, catalogMatchesSummary, assetCacheError } from '../../shared/assetCache.js';
+import { ASSET_CACHE_META, ASSET_CACHE_LATEST_KEY, ASSET_CACHE_STATS_KEY, isAssetCacheStats, MAX_MANIFEST_BYTES,
+  verifyAssetCatalog, assetCacheCatalogKey, validateAssetCacheSummary, catalogMatchesSummary,
+  assetCacheError } from '../../shared/assetCache.js';
 import { ASSET_CACHE_SW_URL, registerAssetCacheWorker, warnCacheUnavailable } from './importCache.js';
 
 const initialState = (env) => {
@@ -13,6 +14,7 @@ const initialState = (env) => {
       persistenceSupported: supported && typeof env.navigator?.storage?.persist === 'function' }, playing: false,
     hasCatalog: false, catalogCurrent: false, catalogComplete: false, serverMissingFiles: 0,
     serverVersion: null, requireAssetCache: false, importStats: null, scanStats: null, waiting: false, policy: null,
+    countsKnown: false, statsUnavailable: false,
     catalogUpdateRetryAt: 0, emergency: false,
     persistence: 'idle' };
 };
@@ -164,7 +166,10 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
     // This document is pinned again: the worker serves the catalog and the imported pack from here on.
     patch({ version: next.version, hasCatalog: true, swError: null, totalFiles: next.totalFiles, totalBytes: next.totalBytes,
       catalogCurrent: catalogMatchesSummary(next, summary),
-      ...(changed ? { readyFiles: 0, readyBytes: 0, missingFiles: next.totalFiles, missingBytes: next.totalBytes, importStats: null } : {}) });
+      // A newly adopted directory has UNKNOWN counts until a scan reports them: the zeros below are a placeholder
+      // and are marked as such, because rendering them as fact is what showed 「已缓存 0 / 19,599」.
+      ...(changed ? { readyFiles: 0, readyBytes: 0, missingFiles: next.totalFiles, missingBytes: next.totalBytes, importStats: null,
+        countsKnown: false, statsUnavailable: false } : {}) });
     return next;
   }
 
@@ -172,6 +177,43 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
     if (ownPlaying || state.catalogCurrent) return;
     const next = await localCatalog();
     if (catalogMatchesSummary(next, summary)) await adoptCatalog(next);
+  }
+
+  /**
+   * The last statistics a scan actually completed: the worker keeps them in ASSET_CACHE_META under
+   * ASSET_CACHE_STATS_KEY (shared/assetCache.js). A recount the browser interrupts falls back HERE — never to
+   * 「nothing is cached」, which is what turned one failed walk into an empty directory and switched off the fast
+   * create path (net.js admission({fast:true}) -> server/lobby.js assetCacheAdmission).
+   */
+  async function recoverStats() {
+    let value = null;
+    try {
+      const meta = await env.caches.open(ASSET_CACHE_META);
+      value = await (await meta.match(env.location.origin + ASSET_CACHE_STATS_KEY))?.json();
+    } catch { /* No statistics is a valid answer: the counts are reported unavailable below. */ }
+    const saved = isAssetCacheStats(value, catalog?.version || null) ? value : null;
+    if (saved) patch({ readyFiles: saved.readyFiles, readyBytes: saved.readyBytes,
+      missingFiles: Math.max(0, saved.totalFiles - saved.readyFiles), missingBytes: Math.max(0, saved.totalBytes - saved.readyBytes),
+      countsKnown: true, statsUnavailable: true });
+    else patch({ countsKnown: false, statsUnavailable: true,
+      // Nothing was ever counted AND nothing can be recalled: the placeholder adoption left behind must not survive
+      // as a number. Counts already known in this session are kept — they are the best evidence there is.
+      ...(state.countsKnown === false ? { readyFiles: null, readyBytes: null, missingFiles: null, missingBytes: null } : {}) });
+    return saved;
+  }
+
+  /**
+   * A directory recount may not fail the panel, and it may not read as an empty directory either: a walk the browser
+   * interrupts (or a worker that cannot answer) keeps the last completed counts and marks them as a fallback, which
+   * the panel renders as 「统计不可用，但缓存仍在使用」. Only a paused / live-match guard propagates.
+   */
+  async function scanDirectory(options = {}) {
+    try { await runWorker('scan', options); return { ok: true }; }
+    catch (error) {
+      if (matchGuard(error) || error?.code === 'ASSET_CACHE_WORKER_UNAVAILABLE') throw error;
+      await recoverStats();
+      return { ok: false, error };
+    }
   }
 
   function stopWorker(code = 'ASSET_CACHE_PAUSED') {
@@ -189,8 +231,14 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
       worker.onmessage = ({ data }) => {
         if (!task || data.id !== task.id) return;
         if (data.type === 'progress') {
-          const { readyFiles, readyBytes, missingFiles, missingBytes, speedBps, importStats, scanStats, waiting } = data;
-          patch({ readyFiles, readyBytes, missingFiles, missingBytes,
+          const { readyFiles, readyBytes, missingFiles, missingBytes, speedBps, importStats, scanStats, waiting,
+            countsKnown, statsUnavailable } = data;
+          // `null` is a count the worker refused to claim (a partial walk). It must reach the state as null and not
+          // decay into 0, or a failed recount reads as 「nothing is cached」 again. A frame without the provenance
+          // flag comes from a worker that predates it, so its numbers stay known.
+          patch({ ...(readyFiles === undefined ? {} : { readyFiles, readyBytes, missingFiles, missingBytes }),
+            ...(countsKnown === undefined ? (readyFiles === undefined ? {} : { countsKnown: true }) : { countsKnown }),
+            ...(statsUnavailable === undefined ? {} : { statsUnavailable }),
             ...(speedBps === undefined ? {} : { speedBps }), ...(importStats ? { importStats } : {}),
             ...(scanStats ? { scanStats } : {}), ...(waiting === undefined ? {} : { waiting }) });
         } else if (data.type === 'done' || data.type === 'error') {
@@ -280,7 +328,7 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
         let summaryError = null;
         try { await refreshSummary(); }
         catch (error) { summaryError = error.code || 'ASSET_CACHE_CATALOG_UNAVAILABLE'; }
-        if (catalog) await runWorker('scan');
+        if (catalog) await scanDirectory();
         patch({ phase: settledPhase(), error: restoreError || summaryError });
         await updateStorage();
       } catch (error) {
@@ -480,9 +528,11 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
         if (job.paused) throw assetCacheError('ASSET_CACHE_PAUSED');
         if (action === 'clear') {
           await swMessage('ASSET_CACHE_CLEAR');
-          patch({ readyFiles: 0, readyBytes: 0, missingFiles: state.totalFiles, missingBytes: state.totalBytes });
+          patch({ readyFiles: 0, readyBytes: 0, missingFiles: state.totalFiles, missingBytes: state.totalBytes,
+            countsKnown: true, statsUnavailable: false });
         } else if (catalog) {
-          await runWorker(action === 'catalog' || action === 'catalog-update' ? 'scan' : action, { deep, ...(file ? { file } : {}) });
+          if (action === 'scan' && !deep) await scanDirectory();
+          else await runWorker(action === 'catalog' || action === 'catalog-update' ? 'scan' : action, { deep, ...(file ? { file } : {}) });
           if (action === 'import' || action === 'download') await swMessage('ASSET_CACHE_PRUNE');
         }
       };

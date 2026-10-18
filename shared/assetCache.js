@@ -4,6 +4,7 @@ export const ASSET_CACHE_NAME = 'sp-asset-cache-v1';
 export const ASSET_CACHE_META = 'sp-asset-cache-meta-v1';
 export const CACHE_KEY_PREFIX = '/__sp_asset_cache__/sha256/';
 export const ASSET_CACHE_LATEST_KEY = '/__sp_asset_cache__/latest';
+export const ASSET_CACHE_STATS_KEY = '/__sp_asset_cache__/stats';
 export const MAX_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_CATALOG_FILES = 100000;
 export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
@@ -108,6 +109,23 @@ export function assetCacheReadinessMatches(value, summary) {
     && summary.totalFiles > 0 && summary.totalBytes > 0
     && value.schema === summary.schema && value.version === summary.version
     && value.readyFiles === summary.totalFiles && value.readyBytes === summary.totalBytes;
+}
+
+/**
+ * The last scan that actually counted the directory cache, written by the scan worker (public/js/asset-cache-worker.js)
+ * into ASSET_CACHE_META and read back when a later recount cannot be completed. A failed walk must fall back to these
+ * numbers, never to "nothing is cached": presenting an interrupted recount as fact is what showed
+ * 「已缓存 0 / 19,599」 for a full 980 MB cache.
+ */
+export function isAssetCacheStats(value, version = null) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && value.schema === CACHE_SCHEMA && SHA.test(value.version || '')
+    && (version === null || value.version === version)
+    && Number.isSafeInteger(value.totalFiles) && value.totalFiles >= 0
+    && Number.isSafeInteger(value.totalBytes) && value.totalBytes >= 0
+    && Number.isSafeInteger(value.readyFiles) && value.readyFiles >= 0 && value.readyFiles <= value.totalFiles
+    && Number.isSafeInteger(value.readyBytes) && value.readyBytes >= 0 && value.readyBytes <= value.totalBytes
+    && typeof value.complete === 'boolean' && typeof value.at === 'number' && Number.isFinite(value.at);
 }
 
 export function catalogURLMap(catalog) {

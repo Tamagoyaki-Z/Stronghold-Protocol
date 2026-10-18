@@ -89,28 +89,113 @@ async function readCatalog(message, h) {
   } finally { await reader?.close(); }
 }
 
+// One whole-directory walk materialises a Request per stored file and is the operation a browser interrupts on a
+// large cache (AbortError, legacy numeric code 20). The walk below is bounded, chunked and fallible as DATA: a
+// recount that cannot be completed keeps the last count that was (ASSET_CACHE_STATS_KEY) and reports the counts as
+// unavailable instead of 「0 cached」, which is how one interrupted walk turned a full 980 MB cache into
+// 「已缓存 0 / 19,599」 and switched the create fast path off.
+const SCAN_BUDGET_MS = 8000;
+const SCAN_CHUNK = 256;
+const SCAN_SAMPLE = 16;
+
+function withDeadline(promise, ms, code) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+const yieldThread = () => new Promise((done) => setTimeout(done, 0));
+
 async function work(message) {
   const h = await helpers;
   if (message.action === 'read-catalog') return readCatalog(message, h);
   const catalog = h.validateAssetCatalog(message.catalog);
   const origin = self.location.origin;
   const cache = await caches.open(h.ASSET_CACHE_NAME);
-  const keys = await cache.keys();
+  // Statistics are an optimisation, not evidence: their cache failing must not fail the scan that reads it.
+  let meta = null;
+  try { meta = await caches.open(h.ASSET_CACHE_META); } catch { meta = null; }
   const hashes = new Map();
-  for (const key of keys) {
-    const hash = key.headers.get('x-sp-asset-sha256');
-    if (/^[a-f0-9]{64}$/.test(hash || '') && key.url === origin + h.assetContentKey(hash)) {
-      hashes.set(hash, Number(key.headers.get('x-sp-asset-bytes')));
-    }
-  }
+  // `presence` describes the last walk ({ partial, error, scanned }); `stats` is the last count that completed and
+  // is the fallback whenever a later walk cannot be.
+  let presence = null, stats = null;
   const ready = (entry) => hashes.get(entry.sha256) === entry.bytes;
-  const report = (extra = {}) => {
+  const counted = () => {
     let readyFiles = 0, readyBytes = 0;
     for (const entry of catalog.files) if (ready(entry)) { readyFiles++; readyBytes += entry.bytes; }
-    send(message.id, 'progress', { readyFiles, readyBytes, missingFiles: catalog.totalFiles - readyFiles,
-      missingBytes: catalog.totalBytes - readyBytes, ...extra });
+    return { readyFiles, readyBytes, missingFiles: catalog.totalFiles - readyFiles, missingBytes: catalog.totalBytes - readyBytes };
   };
+  const recalled = () => ({ readyFiles: stats.readyFiles, readyBytes: stats.readyBytes,
+    missingFiles: Math.max(0, catalog.totalFiles - stats.readyFiles), missingBytes: Math.max(0, catalog.totalBytes - stats.readyBytes) });
+  const exact = () => !!presence && !presence.partial && !presence.error;
+  // 「the last recount did not complete」, so every frame agrees with the frame that reported the failure.
+  const walkFailed = () => !!presence && (presence.partial || !!presence.error);
+  /** Every progress frame carries the counts AND their provenance. A partial or failed walk falls back to the last
+   *  completed count; with none the counts are null (countsKnown false), never 0. */
+  const counts = () => {
+    if (exact()) return { ...counted(), countsKnown: true, statsUnavailable: false };
+    if (stats) return { ...recalled(), countsKnown: true, statsAt: stats.at, statsSource: 'metadata',
+      statsUnavailable: walkFailed() };
+    return { readyFiles: null, readyBytes: null, missingFiles: null, missingBytes: null,
+      countsKnown: false, statsUnavailable: true, statsAt: 0, statsSource: null };
+  };
+  const report = (extra = {}) => send(message.id, 'progress', { ...counts(), ...extra });
+  const readStats = async () => {
+    if (!meta) return null;
+    try {
+      const value = await (await meta.match(origin + h.ASSET_CACHE_STATS_KEY))?.json();
+      return h.isAssetCacheStats(value, catalog.version) && value.totalFiles === catalog.totalFiles
+        && value.totalBytes === catalog.totalBytes ? value : null;
+    } catch { return null; }
+  };
+  /** Only a walk that counted every entry may become the fallback for the next failure; returns that record. */
+  const writeStats = async () => {
+    if (!meta || !exact()) return null;
+    const { readyFiles, readyBytes } = counted();
+    const record = { schema: h.CACHE_SCHEMA, version: catalog.version, totalFiles: catalog.totalFiles,
+      totalBytes: catalog.totalBytes, readyFiles, readyBytes,
+      complete: readyFiles === catalog.totalFiles && readyBytes === catalog.totalBytes, at: Date.now() };
+    try { await meta.put(new Request(origin + h.ASSET_CACHE_STATS_KEY), Response.json(record)); }
+    catch { return null; }
+    return record;
+  };
+  /** What a bounded walk managed to prove. A storage failure or a budget overrun is a value here, never a throw. */
+  const enumerate = async (budgetMs) => {
+    const deadline = Date.now() + budgetMs;
+    const result = { partial: false, error: null, scanned: 0 };
+    let keys;
+    try { keys = await withDeadline(cache.keys(), budgetMs, 'ASSET_CACHE_SCAN_TIMEOUT'); }
+    catch (error) { result.error = storageCode(error); return result; }
+    for (const key of keys) {
+      const hash = key.headers.get('x-sp-asset-sha256');
+      if (/^[a-f0-9]{64}$/.test(hash || '') && key.url === origin + h.assetContentKey(hash)) {
+        hashes.set(hash, Number(key.headers.get('x-sp-asset-bytes')));
+      }
+      result.scanned++;
+      if (result.scanned % SCAN_CHUNK === 0) {
+        await yieldThread();
+        if (Date.now() > deadline) { result.partial = true; break; }
+      }
+    }
+    return result;
+  };
+  /** Bounded probe over entries spread across the catalog: recalled statistics are only trusted while the pinned
+   *  directory still holds those bytes, so an eviction or a clear is noticed without a full walk. */
+  const sampleIntact = async () => {
+    const total = catalog.files.length;
+    if (!total) return false;
+    const step = Math.max(1, Math.floor(total / SCAN_SAMPLE));
+    for (let index = 0; index < total; index += step) {
+      const entry = catalog.files[index];
+      const hit = await cache.match(origin + h.assetContentKey(entry.sha256));
+      if (!h.isVerifiedAssetResponse(hit, entry)) return false;
+    }
+    return true;
+  };
+  const absentCount = () => (exact() ? catalog.files.filter((entry) => !ready(entry)).length : null);
   const store = async (entry, body) => {
+
     cancelled();
     if (body.byteLength !== entry.bytes || await h.sha256Hex(body) !== entry.sha256) throw h.assetCacheError('ASSET_CACHE_HASH_MISMATCH');
     cancelled();
@@ -119,28 +204,54 @@ async function work(message) {
     await cache.put(request, new Response(body, { headers: h.validatedCacheHeaders(entry) }));
     hashes.set(entry.sha256, entry.bytes);
   };
+  stats = await readStats();
   report();
   if (message.action === 'scan') {
     if (message.deep) {
+      presence = await enumerate(SCAN_BUDGET_MS);
       let checked = 0, invalid = 0;
       const verified = new Set();
-      for (const entry of catalog.files) {
-        cancelled();
-        if (!ready(entry) || verified.has(entry.sha256)) continue;
-        verified.add(entry.sha256);
-        const response = await cache.match(origin + h.assetContentKey(entry.sha256));
-        let valid = h.isVerifiedAssetResponse(response, entry);
-        if (valid) {
-          const body = await response.arrayBuffer();
-          valid = body.byteLength === entry.bytes && await h.sha256Hex(body) === entry.sha256;
+      // A partial walk means some entries were never enumerated: verify the ones it did prove instead of treating
+      // the rest as absent, and never let the partial map reach the panel as a count (counts() falls back).
+      if (exact()) {
+        for (const entry of catalog.files) {
+          cancelled();
+          if (!ready(entry) || verified.has(entry.sha256)) continue;
+          verified.add(entry.sha256);
+          const response = await cache.match(origin + h.assetContentKey(entry.sha256));
+          let valid = h.isVerifiedAssetResponse(response, entry);
+          if (valid) {
+            const body = await response.arrayBuffer();
+            valid = body.byteLength === entry.bytes && await h.sha256Hex(body) === entry.sha256;
+          }
+          if (!valid) { hashes.delete(entry.sha256); await cache.delete(origin + h.assetContentKey(entry.sha256)); invalid++; }
+          checked++;
+          if (checked % 20 === 0) report({ scanStats: { checked, invalid } });
         }
-        if (!valid) { hashes.delete(entry.sha256); await cache.delete(origin + h.assetContentKey(entry.sha256)); invalid++; }
-        checked++;
-        if (checked % 20 === 0) report({ scanStats: { checked, invalid } });
       }
-      report({ scanStats: { checked, invalid } });
+      stats = await writeStats() || stats;
+      report({ scanStats: { checked, invalid, partial: presence.partial, error: presence.error },
+        ...(exact() ? {} : { statsUnavailable: true }) });
+    } else if (stats && await sampleIntact()) {
+      // The last completed count still describes the pinned directory: answer from metadata, no walk at all.
+      report();
+    } else {
+      presence = await enumerate(SCAN_BUDGET_MS);
+      if (exact()) {
+        stats = await writeStats() || stats;
+        report({ statsSource: 'scan', statsAt: stats?.at || Date.now() });
+      } else {
+        // 「统计不可用，但缓存仍在使用」: the last completed count stays the answer and the walk's failure is data.
+        report({ statsUnavailable: true, scanStats: { checked: presence.scanned, invalid: 0,
+          partial: presence.partial, error: presence.error } });
+      }
     }
   } else if (message.action === 'download') {
+    presence = await enumerate(SCAN_BUDGET_MS);
+    // A failed walk cannot tell 「absent」 from 「not counted」. Re-downloading a complete 980 MB directory from the
+    // server is far worse than refusing, so download requires the exact map; import below stays available.
+    if (!exact()) throw h.assetCacheError('ASSET_CACHE_SCAN_INCOMPLETE', new Error(presence.error || 'partial walk'));
+    report();
     let received = 0;
     const started = performance.now();
     for (const entry of catalog.files) {
@@ -183,6 +294,10 @@ async function work(message) {
     }
   } else if (message.action === 'import') {
     if (!(message.file instanceof Blob)) throw h.assetCacheError('ASSET_CACHE_ZIP_INVALID');
+    // Import stays available on a partial walk: it re-verifies every entry it rewrites, so an incomplete map costs
+    // re-reads only. Download refuses for exactly the opposite reason.
+    presence = await enumerate(SCAN_BUDGET_MS);
+    report();
     const reader = new zip.ZipReader(new zip.BlobReader(message.file), { useWebWorkers: false, checkSignature: true });
     let entries;
     const expected = new Map(catalog.files.map((entry) => [entry.url.slice(1), entry]));
@@ -210,13 +325,14 @@ async function work(message) {
         }
         if ((stats.imported + stats.reused + stats.invalid) % 10 === 0) report({ importStats: { ...stats } });
       }
-      stats.absent = catalog.files.filter((entry) => !ready(entry)).length;
+      stats.absent = absentCount();
       report({ importStats: stats });
     } catch (error) {
       if (error.code || error.name === 'QuotaExceededError') throw error;
       throw h.assetCacheError('ASSET_CACHE_ZIP_INVALID', error);
     } finally { await reader.close(); }
   } else throw h.assetCacheError('ASSET_CACHE_BAD_MESSAGE');
+  stats = await writeStats() || stats;
   report({ speedBps: 0, waiting: false });
 }
 
