@@ -2,12 +2,12 @@
 // All expensive work runs in a dedicated worker. UI consumes codes through i18n, never raw errors.
 import { ASSET_CACHE_META, ASSET_CACHE_LATEST_KEY, MAX_MANIFEST_BYTES, verifyAssetCatalog,
   assetCacheCatalogKey, validateAssetCacheSummary, catalogMatchesSummary, assetCacheError } from '../../shared/assetCache.js';
-import { ASSET_CACHE_SW_URL, registerAssetCacheWorker } from './importCache.js';
+import { ASSET_CACHE_SW_URL, registerAssetCacheWorker, warnCacheUnavailable } from './importCache.js';
 
 const initialState = (env) => {
   const supported = !!(env.isSecureContext && env.caches && env.navigator?.serviceWorker
     && env.Worker && env.crypto?.subtle && env.navigator?.locks);
-  return { supported, phase: 'idle', error: null,
+  return { supported, phase: 'idle', error: null, swError: null,
     totalFiles: 0, readyFiles: 0, totalBytes: 0, readyBytes: 0, missingFiles: 0, missingBytes: 0,
     speedBps: 0, version: null, storage: { usage: 0, quota: 0, persisted: false,
       persistenceSupported: supported && typeof env.navigator?.storage?.persist === 'function' }, playing: false,
@@ -52,6 +52,21 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
       const timer = env.setTimeout(() => reject(assetCacheError(code)), ms);
       promise.then((value) => { env.clearTimeout(timer); resolve(value); }, (error) => { env.clearTimeout(timer); reject(error); });
     });
+  }
+
+  /** A live match pauses mutation on purpose; that is not a failure and must not warn. */
+  const matchGuard = (error) => error?.code === 'ASSET_CACHE_PLAYING' || error?.code === 'ASSET_CACHE_PAUSED';
+
+  /**
+   * The worker or this document's pin failed, so nothing reads the imported or the directory cache and every
+   * asset comes back from the CDN. That used to end in an empty catch and a healthy-looking panel. Keep the code
+   * readable in `state.swError` and warn once (importCache.js holds the single flag).
+   */
+  function reportCacheInactive(error) {
+    const code = error?.code || error?.message || 'ASSET_CACHE_STORAGE_ERROR';
+    patch({ swError: code });
+    warnCacheUnavailable(code, error, env.console);
+    return code;
   }
 
   async function updateStorage() {
@@ -146,7 +161,8 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
     await swMessage('ASSET_CACHE_PIN', { catalog: next, playing: ownPlaying });
     const changed = catalog?.version !== next.version;
     catalog = next;
-    patch({ version: next.version, hasCatalog: true, totalFiles: next.totalFiles, totalBytes: next.totalBytes,
+    // This document is pinned again: the worker serves the catalog and the imported pack from here on.
+    patch({ version: next.version, hasCatalog: true, swError: null, totalFiles: next.totalFiles, totalBytes: next.totalBytes,
       catalogCurrent: catalogMatchesSummary(next, summary),
       ...(changed ? { readyFiles: 0, readyBytes: 0, missingFiles: next.totalFiles, missingBytes: next.totalBytes, importStats: null } : {}) });
     return next;
@@ -230,7 +246,7 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
       // since another playing tab may have closed without sending a final message.
       if (!operation) {
         try { const result = await swMessage('ASSET_CACHE_CAN_MUTATE'); patch({ playing: ownPlaying || !!result.playing }); }
-        catch { /* Explicit operations report SW failures; opening the dialog stays usable. */ }
+        catch (error) { reportCacheInactive(error); /* Explicit operations report SW failures; opening the dialog stays usable. */ }
       }
       return getState();
     }
@@ -253,7 +269,11 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
           const local = await localCatalog();
           // Pin before PLAYING so an older active SW can also restore a direct match reconnect.
           if (local) await adoptCatalog(local, { restoring: true });
-        } catch (error) { restoreError = error.code || 'ASSET_CACHE_STORAGE_ERROR'; }
+        } catch (error) {
+          restoreError = error.code || 'ASSET_CACHE_STORAGE_ERROR';
+          // A live-match guard is this cache working as intended, not a failure: only real ones are reported.
+          if (!matchGuard(error)) reportCacheInactive(error);
+        }
         const playback = await swMessage('ASSET_CACHE_PLAYING', { playing: ownPlaying });
         patch({ playing: ownPlaying || !!playback.playing });
         initialized = true;
@@ -264,7 +284,8 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
         patch({ phase: settledPhase(), error: restoreError || summaryError });
         await updateStorage();
       } catch (error) {
-        const paused = error.code === 'ASSET_CACHE_PLAYING' || error.code === 'ASSET_CACHE_PAUSED';
+        const paused = matchGuard(error);
+        if (!paused) reportCacheInactive(error);
         patch({ phase: paused ? 'paused' : 'error', error: paused ? null : error.code || 'ASSET_CACHE_STORAGE_ERROR' });
       }
       return getState();

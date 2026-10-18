@@ -219,13 +219,56 @@ async function serveImportedAsset(request) {
   return fetch(request);
 }
 
+/** A GET for a URL this origin's imported pack stores, Range or not. shouldServeImportedAsset() refuses a Range
+ * request itself (public/sw.js, still shipped, relies on that), so ask it about the URL alone. */
+const importedAssetURL = (request) => shouldServeImportedAsset({ url: request.url, method: request.method }, origin);
+
+/**
+ * The sliced 206 of one stored imported response. The entry keeps its own Content-Type; only the length and the
+ * range change. A partial body is built here and never written back to the cache. A range that is malformed or
+ * unsatisfiable (start past the end, last before first, a non-numeric bound) is 416, as the catalog branch does.
+ */
+async function rangedImportedResponse(hit, range) {
+  // The import stores decoded bytes, and only the whole body can be sliced: the same read the catalog branch does.
+  const bytes = new Uint8Array(await hit.arrayBuffer());
+  const part = parseAssetRange(range, bytes.byteLength);
+  if (!part) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${bytes.byteLength}` } });
+  const headers = new Headers(hit.headers);
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Content-Length', String(part.end - part.start + 1));
+  headers.set('Content-Range', `bytes ${part.start}-${part.end}/${bytes.byteLength}`);
+  return new Response(bytes.slice(part.start, part.end + 1), { status: 206, headers });
+}
+
+/**
+ * A Range request for a URL the imported pack stores. <audio>, <video> and WebAudio always send one, so audio the
+ * player already imported would otherwise leave the origin on every play and every seek. A hit is answered as 206
+ * from the cached bytes. A multi-part Range (a comma) is not sliced here at all and goes to the network, and a miss
+ * stays with the catalog branch — which answers 206 from a verified sp-asset-cache-v1 entry or goes to the network —
+ * so no byte this browser already holds is fetched again.
+ */
+async function serveRangedImportedAsset(event, path) {
+  const request = event.request;
+  if ((request.headers.get('range') || '').includes(',')) return fetch(request);
+  const url = new URL(request.url);
+  const cache = await caches.open(IMPORTED_ASSET_CACHE);
+  const hit = await cache.match(url.origin + url.pathname);
+  if (!hit) return path ? fetchAsset(event, path) : fetch(request);
+  return rangedImportedResponse(hit, request.headers.get('range') || '');
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
-  // A player who imported this origin's art must be served those bytes, so the imported pack wins. A Range
-  // request falls through to the catalog path (which answers 206 itself) or the network, keeping audio
-  // seeking on the server exactly as public/sw.js left it.
+  // A player who imported this origin's art must be served those bytes, so the imported pack wins.
   if (shouldServeImportedAsset(request, origin)) { event.respondWith(serveImportedAsset(request)); return; }
   const path = decodedAssetPath(request.url, origin);
+  // The same art with a Range header: playback and seeking ask for a byte range every time, so answer from the
+  // imported bytes instead of returning to the CDN for content the player already has. This asks about the URL
+  // only (a pack may hold a type the catalog does not list, and the imported branch above serves it too). A
+  // non-GET (HEAD) never reaches either branch, and no Range response is ever written to a cache (see fetchAsset).
+  if (request.headers.has('range') && importedAssetURL(request)) {
+    event.respondWith(serveRangedImportedAsset(event, path)); return;
+  }
   if (path) event.respondWith(fetchAsset(event, path));
 });

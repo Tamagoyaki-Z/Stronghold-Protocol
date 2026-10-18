@@ -6,8 +6,10 @@
 //
 // The worker serves only same-origin GET of a content-hashed /assets/, /fonts/ or /media/ URL. A hit comes from
 // this cache. A miss goes to the network and is not written here. HTML, scripts, /data/, /sim/ and /ws are never
-// matched. A Range request is left to the network so audio seeking still reaches the server. What an import stored is
-// also listed in one index entry of the cache (IMPORTED_INDEX_URL): Chrome cannot list a cache that large.
+// matched. A Range request is refused by the predicate below, so the caller decides: asset-cache-sw.js slices a
+// single-part Range out of this cache itself (206), while the retired classic public/sw.js still sends every
+// Range request to the network. What an import stored is also listed in one index entry of the cache
+// (IMPORTED_INDEX_URL): Chrome cannot list a cache that large.
 
 /** Cache Storage name. Bump the suffix to drop previously imported bytes on the next activation. */
 export const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v1';
@@ -29,6 +31,9 @@ export const ASSET_CACHE_SW_SCOPE = '/';
 
 /**
  * Whether a request should be answered from the import cache.
+ * A Range request is never answered here (always false, even on a hit): the caller decides what a partial
+ * response means. asset-cache-sw.js serves a single-part Range out of this cache itself and asks about the URL
+ * alone, through the `{ url, method }` form below.
  * `pageOrigin` is the page (and the worker) origin. A relative URL is resolved against it.
  * @param {Request | { url?: string, method?: string, headers?: { get?: Function, range?: string } } | string} request
  * @param {string} [pageOrigin]
@@ -66,13 +71,33 @@ export function registerAssetCacheWorker(nav = globalThis.navigator, url = ASSET
 }
 
 /**
- * Boot's entry point for that same worker. Failures are swallowed: a missing worker must not stop the game.
+ * A worker or pin failure means no imported and no directory byte is read: every asset goes back to the CDN, and
+ * the page looks healthy. That used to be swallowed (main.js ignores the registration result, the panel's recheck
+ * catch was empty). Warn once per page, with the code; the panel also keeps the code in state.swError.
+ * One flag for both call sites: they are the same condition, and repeating it per request would be noise.
+ * @param {string} code the ASSET_CACHE_* code the failure carries
+ * @param {unknown} [error] the thrown error, kept for the stack in the console
+ * @param {Console} [log] `env.console` for the panel, globalThis.console at boot
+ */
+let warnedUnavailable = false;
+export function warnCacheUnavailable(code, error, log = globalThis.console) {
+  if (warnedUnavailable) return;
+  warnedUnavailable = true;
+  log?.warn?.(`[asset-cache] ${code}: 素材预缓存未生效，已导入和已缓存的素材不会被读取，将回源服务器。`, error);
+}
+
+/**
+ * Boot's entry point for that same worker. The game must still boot without a worker, but a failure here is why
+ * every asset can come from the CDN: it is warned once (warnCacheUnavailable) instead of vanishing.
  * Call only from boot. Unit tests import the downloader and must not register a worker as a side effect.
  * @returns {Promise<boolean>}
  */
 export function registerImportedAssetWorker(nav = globalThis.navigator, secure = globalThis.isSecureContext) {
   if (!secure || !nav?.serviceWorker?.register) return Promise.resolve(false);
-  return registerAssetCacheWorker(nav).then(() => true, () => false);
+  return registerAssetCacheWorker(nav).then(() => true, (error) => {
+    warnCacheUnavailable('ASSET_CACHE_SW_UNAVAILABLE', error);
+    return false;
+  });
 }
 
 /** Content-Type stored with an imported response, chosen from the URL the game will request. */

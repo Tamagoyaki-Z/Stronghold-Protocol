@@ -49,9 +49,9 @@ async function fixture({ slowMetadata = false, blockPassive = false } = {}) {
     handlers.get('message')({ source: windows.get(id), data, ports: [{ postMessage: resolve }],
       waitUntil(promise) { promise.catch(reject); } });
   });
-  const fetchFile = async (id) => {
+  const fetchFile = async (id, request = new Request(origin + entry.url)) => {
     const waits = []; let result;
-    handlers.get('fetch')({ clientId: id, request: new Request(origin + entry.url),
+    handlers.get('fetch')({ clientId: id, request,
       respondWith(promise) { result = promise; }, waitUntil(promise) { waits.push(promise); } });
     const response = await result;
     await Promise.all(waits);
@@ -103,4 +103,87 @@ test('SW allows the first verified pin during direct reconnect, but refuses dire
   changed.version = await helpers.sha256Hex(new TextEncoder().encode(JSON.stringify({ schema: 1, files: changed.files })));
   assert.equal((await f.message('page', { type: 'ASSET_CACHE_PIN', catalog: changed })).error, 'ASSET_CACHE_PLAYING');
   assert.equal((await f.message('page', { type: 'ASSET_CACHE_CAN_MUTATE' })).playing, true);
+});
+
+// <audio>, <video> and WebAudio send a Range on every play and every seek, so the imported pack must be able to
+// answer one from its own bytes: the player already holds 12,637 mp3 files that would otherwise return from the
+// CDN on every playback. The catalog branch is a separate generator and keeps its own verified response path.
+const importedPath = '/media/~0123456789abcdef/audio/bgm/a';
+const importedURL = origin + importedPath;
+const importedBody = new TextEncoder().encode('x'.repeat(200));
+const rangeRequest = (url, range) => new Request(url, range ? { headers: { Range: range } } : undefined);
+
+async function importedFixture() {
+  const f = await fixture();
+  f.addClient('page');
+  const cache = await f.storage.open(importHelpers.IMPORTED_ASSET_CACHE);
+  await cache.put(importedURL, new Response(importedBody, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } }));
+  return f;
+}
+
+test('SW slices a single-part Range for an imported pack hit into 206 from the cached bytes', async () => {
+  const f = await importedFixture();
+  const response = await f.fetchFile('page', rangeRequest(importedURL, 'bytes=0-99'));
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get('content-range'), 'bytes 0-99/200');
+  assert.equal(response.headers.get('content-length'), '100');
+  assert.equal(response.headers.get('accept-ranges'), 'bytes');
+  assert.equal(response.headers.get('content-type'), 'audio/mpeg', 'the stored Content-Type is kept');
+  assert.equal(await response.text(), 'x'.repeat(100));
+  assert.equal(f.network(), 0, 'an imported hit never reaches the network');
+});
+
+test('SW answers an imported hit without a Range with the whole stored body', async () => {
+  const f = await importedFixture();
+  const response = await f.fetchFile('page', rangeRequest(importedURL));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-range'), null);
+  assert.equal(await response.text(), 'x'.repeat(200));
+  assert.equal(f.network(), 0);
+});
+
+test('SW leaves a Range for an imported miss to the network instead of synthesizing one', async () => {
+  const f = await importedFixture();
+  const response = await f.fetchFile('page', rangeRequest(`${origin}/media/~0123456789abcdef/audio/bgm/miss`, 'bytes=0-99'));
+  assert.equal(response.status, 200, 'nothing is invented for a URL the pack does not hold');
+  assert.equal(response.headers.get('content-range'), null);
+  assert.equal(f.network(), 1);
+});
+
+test('SW answers an unsatisfiable or malformed imported Range with 416 and the stored length', async () => {
+  const f = await importedFixture();
+  const past = await f.fetchFile('page', rangeRequest(importedURL, 'bytes=500-'));
+  assert.equal(past.status, 416);
+  assert.equal(past.headers.get('content-range'), 'bytes */200');
+  assert.equal((await f.fetchFile('page', rangeRequest(importedURL, 'bytes=9-4'))).status, 416);
+  assert.equal((await f.fetchFile('page', rangeRequest(importedURL, 'bytes=abc-def'))).status, 416);
+  assert.equal(f.network(), 0, 'a stored file is never fetched just to reject a bad range');
+});
+
+test('SW sends a multi-part Range to the network even on an imported hit and caches no partial body', async () => {
+  const f = await importedFixture();
+  const response = await f.fetchFile('page', rangeRequest(importedURL, 'bytes=0-9,20-29'));
+  assert.equal(response.status, 200, 'a multi-part Range is not sliced here');
+  assert.equal(response.headers.get('content-range'), null);
+  assert.equal(f.network(), 1);
+  const imported = await f.storage.open(importHelpers.IMPORTED_ASSET_CACHE);
+  assert.deepEqual((await imported.keys()).map((key) => key.url), [importedURL], 'no partial response entered the import cache');
+  const verified = await f.storage.open(helpers.ASSET_CACHE_NAME);
+  assert.deepEqual(await verified.keys(), [], 'a Range response never enters the verified content cache');
+});
+
+test('SW slices a Range for an imported type the catalog cannot list, not only audio under /media/', async () => {
+  const f = await fixture(); f.addClient('page');
+  const videoURL = `${origin}/assets/~0123456789abcdef/video/clip.mp4`;
+  const cache = await f.storage.open(importHelpers.IMPORTED_ASSET_CACHE);
+  await cache.put(videoURL, new Response(importedBody, { status: 200, headers: { 'Content-Type': 'video/mp4' } }));
+  // The catalog's own allowlist has no video suffix, so decodedAssetPath() refuses this URL: only the imported
+  // branch can answer it, and it must answer a Range as well as a plain GET.
+  assert.equal(helpers.decodedAssetPath(videoURL, origin), null);
+  const response = await f.fetchFile('page', rangeRequest(videoURL, 'bytes=10-19'));
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get('content-range'), 'bytes 10-19/200');
+  assert.equal(response.headers.get('content-type'), 'video/mp4');
+  assert.equal(await response.text(), 'x'.repeat(10));
+  assert.equal(f.network(), 0);
 });
