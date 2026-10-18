@@ -220,6 +220,16 @@ async function work(message) {
   report({ speedBps: 0, waiting: false });
 }
 
+/**
+ * The page switches on symbolic ASSET_CACHE_* codes (public/js/ui/assetCache.js). A DOMException carries a
+ * numeric legacy code instead (20 = AbortError, 22 = QuotaExceededError), and forwarding that number made a
+ * failed directory scan print `[asset-cache] 20: 素材预缓存未生效…` with a code no consumer can read.
+ * Only a non-empty string from our own assetCacheError() passes through; anything else is the storage bucket.
+ */
+function storageCode(error) {
+  return typeof error?.code === 'string' && error.code ? error.code : 'ASSET_CACHE_STORAGE_ERROR';
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(done, ms);
@@ -236,6 +246,6 @@ self.onmessage = async ({ data }) => {
   active = { id: data.id, paused: false, abort: new AbortController() };
   try { const result = await work(data); send(data.id, 'done', result); }
   catch (error) { send(data.id, 'error', { code: active.paused ? 'ASSET_CACHE_PAUSED'
-    : error.name === 'QuotaExceededError' ? 'ASSET_CACHE_QUOTA' : error.code || 'ASSET_CACHE_STORAGE_ERROR' }); }
+    : error.name === 'QuotaExceededError' ? 'ASSET_CACHE_QUOTA' : storageCode(error) }); }
   finally { active = null; }
 };

@@ -68,13 +68,30 @@ async function broadcast(message) {
   for (const client of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) client.postMessage(message);
 }
 
+const SYMBOLIC_CODE = /^ASSET_CACHE_[A-Z0-9_]+$/;
+
+/**
+ * A symbolic ASSET_CACHE_* code, else the storage bucket. The panel switches on these strings
+ * (public/js/ui/assetCache.js cacheErrorText), so neither a DOMException's numeric legacy code (20 = AbortError)
+ * nor free-form prose from the platform may be posted as `error`. This worker's own guards are thrown as bare
+ * Errors carrying the code in `message` (`new Error('ASSET_CACHE_PLAYING')`), so the message is checked too.
+ */
+function symbolicCode(error) {
+  for (const value of [error?.code, error?.message]) if (typeof value === 'string' && SYMBOLIC_CODE.test(value)) return value;
+  return 'ASSET_CACHE_STORAGE_ERROR';
+}
+
 async function handleMessage(event) {
   const data = event.data;
   const source = event.source;
   if (!data || !source?.id || !event.ports?.[0]) return;
   const port = event.ports[0];
-  const meta = await caches.open(ASSET_CACHE_META);
   try {
+    // Opened inside the guard on purpose: metadata storage that fails (evicted origin, quota, an aborted
+    // Cache Storage operation) must still be ANSWERED. Outside the guard handleMessage rejects, nothing is
+    // posted on the port, and the page waits its full 10 s before reporting the worker unavailable instead
+    // of the real code (public/js/assetCache.js swMessage -> ASSET_CACHE_SW_UNAVAILABLE on timeout).
+    const meta = await caches.open(ASSET_CACHE_META);
     if (data.type === 'ASSET_CACHE_PIN') {
       const catalog = await verifyAssetCatalog(data.catalog);
       const previous = await getPin(source.id);
@@ -124,7 +141,11 @@ async function handleMessage(event) {
       for (const id of pins.keys()) if (!livePins.has(pinPath(id))) pins.delete(id);
       port.postMessage({ ok: true });
     } else throw new Error('ASSET_CACHE_BAD_MESSAGE');
-  } catch (error) { port.postMessage({ ok: false, error: error.code || error.message || 'ASSET_CACHE_STORAGE_ERROR' }); }
+  } catch (error) {
+    // Only a symbolic ASSET_CACHE_* string is readable by the panel (public/js/ui/assetCache.js switches on
+    // those); a DOMException carries a numeric legacy code instead (20 = AbortError), which must not leak.
+    port.postMessage({ ok: false, error: symbolicCode(error) });
+  }
 }
 self.addEventListener('message', (event) => {
   // Metadata writes are asynchronous. Preserve delivery order so PIN and PLAYING do not
