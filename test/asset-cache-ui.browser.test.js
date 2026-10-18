@@ -98,6 +98,7 @@ test('Edge title icons retain their shape; cache controls are visible and persis
       return state.serverVersion && !['initializing', 'checking'].includes(state.phase);
     });
     assert.equal(await page.$eval('[data-testid="asset-cache-download"]', (el) => el.disabled), true, 'a cold browser needs a local catalog first');
+    assert.match(await page.$eval('[data-testid="asset-cache-online-disabled"]', (el) => el.innerText), /已关闭在线下载/, 'the disabled entry says why');
     assert.ok(await page.$('[data-testid="asset-cache-catalog-import"]'), 'standalone catalog import is visible');
     assert.match(await page.$eval('[data-testid="asset-cache-import"]', (el) => el.innerText), /强烈推荐/);
     assert.notEqual(await page.$eval(persist, (el) => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');

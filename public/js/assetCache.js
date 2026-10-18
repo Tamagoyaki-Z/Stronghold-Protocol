@@ -2,7 +2,7 @@
 // All expensive work runs in a dedicated worker. UI consumes codes through i18n, never raw errors.
 import { ASSET_CACHE_META, ASSET_CACHE_LATEST_KEY, ASSET_CACHE_STATS_KEY, isAssetCacheStats, MAX_MANIFEST_BYTES,
   verifyAssetCatalog, assetCacheCatalogKey, validateAssetCacheSummary, catalogMatchesSummary,
-  assetCacheError } from '../../shared/assetCache.js';
+  assetCacheError, ONLINE_DOWNLOAD_DISABLED } from '../../shared/assetCache.js';
 import { ASSET_CACHE_SW_URL, registerAssetCacheWorker, warnCacheUnavailable } from './importCache.js';
 
 const initialState = (env) => {
@@ -21,7 +21,8 @@ const initialState = (env) => {
 
 export function createAssetCacheManager({ environment = globalThis, doFetch, workerURL = '/js/asset-cache-worker.js',
   swURL = ASSET_CACHE_SW_URL, statusURL = '/api/asset-cache/status',
-  catalogURL = '/api/asset-cache/catalog', catalogUpdateURL = '/api/asset-cache/catalog-update' } = {}) {
+  catalogURL = '/api/asset-cache/catalog', catalogUpdateURL = '/api/asset-cache/catalog-update',
+  onlineDownload = !ONLINE_DOWNLOAD_DISABLED } = {}) {
   const env = environment;
   const state = initialState(env);
   const listeners = new Set();
@@ -454,6 +455,9 @@ export function createAssetCacheManager({ environment = globalThis, doFetch, wor
     if (state.emergency && (action === 'download' || action === 'catalog-update')) throw assetCacheError('ASSET_CACHE_EMERGENCY');
     await ensureReady();
     if (state.emergency && (action === 'download' || action === 'catalog-update')) throw assetCacheError('ASSET_CACHE_EMERGENCY');
+    // Owner policy: the whole-package pull (the directory transfer and the fill loop over it) is closed; importing
+    // a local package stays available, and so does the per-file loading normal play depends on.
+    if (!onlineDownload && (action === 'download' || action === 'catalog-update')) throw assetCacheError('ASSET_CACHE_ONLINE_DISABLED');
     if (operation) throw assetCacheError('ASSET_CACHE_BUSY');
     const phase = action === 'catalog-update' ? 'updating-catalog' : action === 'import' || action === 'catalog' ? 'importing'
       : action === 'download' ? 'downloading' : deep ? 'verifying' : 'checking';

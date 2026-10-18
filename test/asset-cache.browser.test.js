@@ -17,7 +17,8 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const PAGE = `<!doctype html><title>Asset cache fixture</title><link rel="icon" href="data:,">
 <script type="module">
 import { createAssetCacheManager } from '/js/assetCache.js';
-const manager = createAssetCacheManager();
+// The fill mechanics stay covered here; production ships the online download disabled (ONLINE_DOWNLOAD_DISABLED).
+const manager = createAssetCacheManager({ onlineDownload: true });
 if (location.search.includes('playing=1')) manager.setPlaying(true);
 window.cacheFixture = { manager, ready: manager.initialize(), state: () => manager.getState() };
 </script>`;

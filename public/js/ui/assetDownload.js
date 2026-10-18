@@ -5,6 +5,7 @@ import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Button, Modal, ProgressBar } from './components.js';
 import { assetDownload } from '../assetDownload.js';
 import { t } from '../../../shared/i18n.js';
+import { ONLINE_DOWNLOAD_DISABLED } from '../../../shared/assetCache.js';
 
 /** 下载完整素材: the button, its hint line and the download dialog. */
 export function AssetDownloadButton() {
@@ -35,11 +36,13 @@ export function AssetDownloadButton() {
   const ready = state.cached || 0;
   const missing = Math.max(0, (state.total || 0) - ready);
   return html`<div class="title-assets__item">
-    <${Button} variant="secondary" block=${true} size="sm" data-testid="asset-download" aria-describedby="title-asset-download-hint" onClick=${() => {
+    <${Button} variant="secondary" block=${true} size="sm" disabled=${ONLINE_DOWNLOAD_DISABLED} data-testid="asset-download" aria-describedby="title-asset-download-hint" onClick=${() => {
       setOpen(true);
       if (state.phase !== 'complete') void assetDownload.start();
     }}>${label}<//>
-    <small id="title-asset-download-hint">${t('含模型、贴图和音频，建议使用 Wi-Fi 下载。')}</small>
+    <small id="title-asset-download-hint" data-testid="asset-download-hint">${ONLINE_DOWNLOAD_DISABLED
+      ? t('已关闭在线下载，请导入本地素材包')
+      : t('含模型、贴图和音频，建议使用 Wi-Fi 下载。')}</small>
     <${Modal} open=${open} onClose=${close} title=${t('下载完整素材')} class="asset-download" actions=${html`
       ${busy ? html`<${Button} onClick=${() => assetDownload.pause()}>${t('暂停下载')}<//>`
         : html`<${Button} variant="primary" data-testid="asset-download-resume" onClick=${() => void assetDownload.start()}>

@@ -8,6 +8,12 @@ export const ASSET_CACHE_STATS_KEY = '/__sp_asset_cache__/stats';
 export const MAX_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_CATALOG_FILES = 100000;
 export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
+// Owner policy (0.3.0): a player installs a local asset package; the site no longer serves a whole-package pull.
+// server/http/assetCache.js refuses the directory endpoints (/api/asset-cache/catalog and /catalog-update) and
+// public/js/assetCache.js refuses the download/catalog-update actions, so both the UI entries and the API behind
+// them are closed. Per-file on-demand loading is deliberately untouched: the service worker's /assets/* fetch and
+// GET /api/asset-cache/file keep working exactly as before.
+export const ONLINE_DOWNLOAD_DISABLED = true;
 const SHA = /^[a-f0-9]{64}$/;
 // `bin` = the 0.2.5 battlefield scene meshes (public/assets/local/scene/*/scene.bin, kind SceneData):
 // browser-side validation must accept exactly what server/assetCacheCatalog.js packs, or the catalog is

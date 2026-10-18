@@ -170,13 +170,13 @@ test('import has its own dialog that requests nothing on opening; imported art i
   await page.evaluate(() => fetch('/healthz?import-probe=1'));
   assert.ok(probes > beforeProbe, 'a non-asset URL still reaches the server');
 
+  // Owner policy (0.3.0): the online pack download is offered disabled, so nothing is requested at all.
+  assert.equal(await page.$eval('[data-testid="asset-download"]', (el) => el.disabled), true, 'the online pack download is disabled');
+  assert.match(await page.$eval('#title-asset-download-hint', (el) => el.textContent), /已关闭在线下载/);
   await page.click('[data-testid="asset-download"]');
-  await page.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('1 个素材下载失败'));
-  assert.equal(counts.get(zipUrl) || 0, 0, 'download skips the imported zip file');
-  assert.equal(counts.get(folderUrl) || 0, 0, 'download skips the imported folder file');
-  assert.equal(counts.get(packUrl) || 0, 0, 'download skips the file of the pack');
-  assert.equal(counts.get(missing), 1);
-  assert.equal(await page.$('.asset-download .asset-import__row'), null, 'the download dialog has no import controls');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await page.$('.asset-download'), null, 'a disabled entry opens no download dialog');
+  for (const url of [zipUrl, folderUrl, packUrl, missing]) assert.equal(counts.get(url) || 0, 0, `nothing is requested: ${url}`);
 
   const insecure = await browser.newPage();
   await insecure.evaluateOnNewDocument(() => {

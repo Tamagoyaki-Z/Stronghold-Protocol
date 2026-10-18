@@ -53,18 +53,13 @@ test('homepage download, visible failure/retry, pause, cache reuse, and the two 
     await new Promise((resolve) => setTimeout(resolve, 500));
     await page.screenshot({ path: path.join(process.env.SP_ASSET_SCREENSHOTS, 'title.png') });
   }
+  // Owner policy (0.3.0): 下载完整素材 stays visible but is disabled and says why, so it never starts a transfer.
+  assert.equal(await page.$eval('[data-testid="asset-download"]', (el) => el.disabled), true, 'the online pack download is disabled');
+  assert.match(await page.$eval('[data-testid="asset-download-hint"]', (el) => el.textContent), /已关闭在线下载/);
   await page.click('[data-testid="asset-download"]');
-  await page.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('1 个素材下载失败'));
-  assert.equal(await page.$eval('.asset-download [role="progressbar"]', (el) => el.getAttribute('aria-valuenow')), '1');
-  assert.equal(counts.get(image), 1);
-  fixed = true;
-  await page.click('[data-testid="asset-download-resume"]');
-  await page.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('本次素材下载完成'));
-  assert.equal(counts.get(image), 1, 'retry does not transfer a successful file again');
-  assert.equal(await page.evaluate((url) => new Promise((resolve) => {
-    const img = new Image(); img.onload = () => resolve(img.naturalWidth); img.onerror = () => resolve(0); img.src = url;
-  }), image), 1);
-  assert.equal(counts.get(image), 1, 'the renderer Image request reuses the downloaded HTTP cache');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(counts.size, 0, 'a disabled entry downloads nothing and opens no dialog');
+  assert.equal(await page.$('.asset-download'), null);
   if (process.env.SP_ASSET_SCREENSHOTS) {
     fs.mkdirSync(process.env.SP_ASSET_SCREENSHOTS, { recursive: true });
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -98,17 +93,14 @@ test('homepage download, visible failure/retry, pause, cache reuse, and the two 
     }
     if (process.env.SP_ASSET_SCREENSHOTS) await page.screenshot({ path: path.join(process.env.SP_ASSET_SCREENSHOTS, `title-${viewport.width}.png`) });
   }
-  // A new browser context has an empty HTTP cache. Closing the dialog must stop a hanging request.
+  // A second, empty context cannot start it either: the entry is disabled before any network work.
   const context = await browser.createBrowserContext();
   const other = await context.newPage();
-  hanging = true;
   await other.goto(srv.url);
+  await other.waitForSelector('[data-testid="asset-download"]');
   await other.click('[data-testid="asset-download"]');
-  await other.waitForFunction(async () => (await import('/js/assetDownload.js')).assetDownload.get().phase === 'downloading');
-  await other.keyboard.press('Escape');
-  await other.waitForFunction(async () => (await import('/js/assetDownload.js')).assetDownload.get().phase === 'paused');
-  hanging = false;
-  await other.click('[data-testid="asset-download"]');
-  await other.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('本次素材下载完成'));
+  assert.equal(await other.$eval('[data-testid="asset-download"]', (el) => el.disabled), true);
+  assert.equal(await other.evaluate(async () => (await import('/js/assetDownload.js')).assetDownload.get().phase), 'idle');
+  await context.close();
   assert.deepEqual(errors, []);
 });

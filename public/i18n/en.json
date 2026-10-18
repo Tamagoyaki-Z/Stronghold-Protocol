@@ -1741,6 +1741,7 @@
   "实际扣血 / 有效治疗，DPS / HPS 按自己的战斗秒数计算。刷新后重新累计。": "Actual HP damage and effective healing. DPS/HPS uses your simulated battle time. Reloading resets totals.",
   "打开后，对局左下角可以查看自己干员的伤害、治疗和 DPS / HPS。官方界面没有这个窗口。改变玩法的插件对局在 Worker 里演算，统计不到，按钮不显示。": "When on, the bottom-left of a match shows your operators' damage, healing and DPS / HPS. The official interface has no such panel. A match whose plugins change the rules is simulated in a Worker and is not counted, so the button stays hidden.",
   "下载完整素材": "Download all assets",
+  "已关闭在线下载，请导入本地素材包": "Online download is disabled. Import a local asset package instead.",
   "素材已下载": "Assets downloaded",
   "继续下载素材": "Resume download",
   "含模型、贴图和音频，建议使用 Wi-Fi 下载。": "Includes models, textures and audio. Wi-Fi recommended.",

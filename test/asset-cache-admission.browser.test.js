@@ -319,16 +319,14 @@ test('Edge explicitly updates an old directory once, reuses assets and admits on
     await page.screenshot({ path: path.join(OUT, `manual-catalog-${viewport.width}.png`) });
   }
   await page.setViewport({ width: 1280, height: 720 });
+  // Owner policy (0.3.0): the manual directory update is offered disabled and never reaches the server, so the panel
+  // keeps the locally imported directory until a local package replaces it.
+  assert.equal(await page.$eval('[data-testid="asset-cache-catalog-update"]', (el) => el.disabled), true, 'the online directory update is disabled');
+  assert.match(await page.$eval('[data-testid="asset-cache-online-disabled"]', (el) => el.innerText), /已关闭在线下载/);
   await page.click('[data-testid="asset-cache-catalog-update"]');
-  await page.waitForFunction(() => {
-    const cache = window.admissionFixture.cache.getState();
-    return cache.catalogCurrent && !['checking', 'updating-catalog'].includes(cache.phase);
-  });
-  assert.equal(report.manualDirectoryRequests, 1);
-  assert.equal((await state(page)).version, catalog.version);
-  assert.equal((await state(page)).readyFiles, 1, 'the unchanged audio content was reused');
-  assert.equal((await request(page, create)).code, 'ASSET_CACHE_REQUIRED', 'updating only the directory grants no admission');
-  assert.equal(await page.$('[data-testid="asset-cache-catalog-update"]'), null, 'an up-to-date catalog cannot be downloaded again');
+  await page.waitForFunction(() => !['checking', 'updating-catalog'].includes(window.admissionFixture.cache.getState().phase));
+  assert.equal(report.manualDirectoryRequests, 0, 'a disabled entry makes no directory request');
+  assert.equal((await request(page, create)).code, 'ASSET_CACHE_REQUIRED', 'no online update grants admission');
   const writer = new ZipWriter(new Uint8ArrayWriter(), { useWebWorkers: false });
   await writer.add('manifest.json', new Uint8ArrayReader(Buffer.from(JSON.stringify(catalog))), { useWebWorkers: false });
   await writer.add(files[0].url.slice(1), new Uint8ArrayReader(contents.get(files[0].url)), { useWebWorkers: false });
@@ -340,7 +338,7 @@ test('Edge explicitly updates an old directory once, reuses assets and admits on
   assert.equal((await request(page, create)).t, 'ok');
   assert.equal((await request(page, { t: 'room.leave' })).t, 'ok');
   assert.equal(report.directoryRequests, 0, 'the old unrestricted directory route stays unused');
-  assert.equal(report.manualDirectoryRequests, 1, 'delta import never downloads its already embedded directory');
+  assert.equal(report.manualDirectoryRequests, 0, 'delta import never downloads a directory, online or embedded');
   assert.equal(report.fillRequests, 0, 'no automatic online asset repair');
   assert.deepEqual(errors, []);
   report.result = 'passed';

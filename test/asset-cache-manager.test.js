@@ -8,7 +8,7 @@ const catalog = { schema: 1, files: [{ url: '/assets/a.png', bytes: 3,
   sha256: 'b'.repeat(64), type: 'image/png', aliases: [] }], totalFiles: 1, totalBytes: 3, complete: true, missing: [] };
 catalog.version = createHash('sha256').update(JSON.stringify({ schema: 1, files: catalog.files })).digest('hex');
 
-function fixture({ storage = {}, secure = true, persistedCatalog = true, fastUpdateTimeout = false, online = false } = {}) {
+function fixture({ storage = {}, secure = true, persistedCatalog = true, fastUpdateTimeout = false, online = false, onlineDownload = true } = {}) {
   const messages = [], work = [], listeners = new Map(), catalogUpdates = [];
   let catalogReads = 0, statusReads = 0, broken = false, playing = false, ready = 0;
   let updateResponse = () => Response.json({ error: 'ASSET_CACHE_CATALOG_LOCAL_ONLY' }, { status: 403 });
@@ -61,7 +61,7 @@ function fixture({ storage = {}, secure = true, persistedCatalog = true, fastUpd
       terminate() { this.onmessage = null; }
     },
   };
-  const manager = createAssetCacheManager({ environment, doFetch: async (url, options) => {
+  const manager = createAssetCacheManager({ environment, onlineDownload, doFetch: async (url, options) => {
     if (url.includes('catalog-update')) {
       catalogUpdates.push({ url, options }); return updateResponse(url, options);
     }
@@ -120,6 +120,20 @@ test('passive asset progress notifications inspect local keys without repeatedly
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(f.catalogReads(), 0); assert.equal(f.statusReads(), 1);
     assert.equal(f.work.filter((job) => job.action === 'scan').length, 2, 'notifications are coalesced into one local scan');
+  } finally { f.manager.destroy(); }
+});
+
+test('the owner-disabled online download refuses the directory and the fill without any request', async () => {
+  const f = fixture({ onlineDownload: false, persistedCatalog: false });
+  try {
+    await f.manager.initialize();
+    const reads = [f.catalogReads(), f.statusReads()];
+    await assert.rejects(f.manager.downloadMissing(), /ASSET_CACHE_ONLINE_DISABLED/);
+    await assert.rejects(f.manager.updateCatalog(), /ASSET_CACHE_ONLINE_DISABLED/);
+    assert.deepEqual([f.catalogReads(), f.statusReads()], reads, 'a refused action issues no directory or summary request');
+    assert.equal(f.work.some((job) => job.action === 'download'), false, 'no download job reaches the worker');
+    await f.manager.importZip(new Blob(['ZIP fixture']));
+    assert.equal(f.manager.getState().phase, 'ready', 'importing a local package stays available');
   } finally { f.manager.destroy(); }
 });
 

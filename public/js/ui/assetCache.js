@@ -6,6 +6,7 @@ import { assetCache } from '../assetCache.js';
 import { assets } from '../assets.js';
 import { store, selectRoute } from '../store.js';
 import { t } from '../../../shared/i18n.js';
+import { ONLINE_DOWNLOAD_DISABLED } from '../../../shared/assetCache.js';
 
 const viewers = new Set();
 let opened = false;
@@ -164,13 +165,13 @@ export function AssetCacheHost() {
           : t('尚未校验')}</span>
         ${canUpdateCatalog ? html`<div class="asset-cache__catalog-update">
           <${Button} variant="secondary" size="sm" icon="download"
-              disabled=${disabled || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
+              disabled=${disabled || ONLINE_DOWNLOAD_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
               onClick=${() => run(() => assetCache.updateCatalog())} data-testid="asset-cache-catalog-update">${t('手动更新目录（限速）')}<//>
           ${retrySeconds > 0 ? html`<span role="status">${t('请等待 {n} 秒后再试', { n: retrySeconds })}</span>` : null}
         </div>` : null}
         ${canDownloadCatalog ? html`<div class="asset-cache__catalog-update">
           <${Button} variant="secondary" size="sm" icon="download"
-              disabled=${disabled || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
+              disabled=${disabled || ONLINE_DOWNLOAD_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
               onClick=${() => run(() => assetCache.downloadCatalog())} data-testid="asset-cache-catalog-download">${t('在线获取完整目录（限速）')}<//>
           ${retrySeconds > 0 ? html`<span role="status">${t('请等待 {n} 秒后再试', { n: retrySeconds })}</span>` : null}
         </div>` : null}
@@ -199,11 +200,13 @@ export function AssetCacheHost() {
         <${Button} variant="primary" icon="folder" disabled=${disabled} onClick=${chooseFile} data-testid="asset-cache-import">
           ${t('导入本地素材包')}<span class="asset-cache__recommend">${t('强烈推荐')}</span><//>
         <${Button} variant="secondary" icon="folder" disabled=${disabled} onClick=${() => catalogInput.current?.click()} data-testid="asset-cache-catalog-import">${t('导入目录 JSON')}<//>
-        <${Button} variant="secondary" icon="download" disabled=${disabled || state.emergency || !state.serverVersion || !state.missingFiles || state.policy?.enabled === false}
+        <${Button} variant="secondary" icon="download" disabled=${disabled || ONLINE_DOWNLOAD_DISABLED || state.emergency || !state.serverVersion || !state.missingFiles || state.policy?.enabled === false}
             onClick=${() => run(() => assetCache.downloadMissing())} data-testid="asset-cache-download">${t('在线补齐缺项（限速）')}<//>
         ${busy ? html`<${Button} variant="secondary" onClick=${() => assetCache.pause()} data-testid="asset-cache-pause">${t('暂停')}<//>` : null}
       </div>
-      <p class="asset-cache__warning">${t('可在线获取目录并限速补齐全部资源；更快的方式仍是导入公告中的完整素材包。')}</p>
+      ${ONLINE_DOWNLOAD_DISABLED
+        ? html`<p class="asset-cache__warning" role="status" data-testid="asset-cache-online-disabled">${t('已关闭在线下载，请导入本地素材包')}</p>`
+        : html`<p class="asset-cache__warning">${t('可在线获取目录并限速补齐全部资源；更快的方式仍是导入公告中的完整素材包。')}</p>`}
       <div class="asset-cache__checks">
         <${Button} variant="secondary" size="sm" disabled=${disabled} onClick=${() => run(() => assetCache.scan({ deep: false }))}>${t('检查更新与缺项')}<//>
         <${Button} variant="secondary" size="sm" disabled=${disabled || !indexed} onClick=${() => run(() => assetCache.scan({ deep: true }))} data-testid="asset-cache-verify">${t('完整校验')}<//>
@@ -218,7 +221,7 @@ export function AssetCacheHost() {
         <p class="asset-cache__note">${t('持久保存可防止浏览器在空间不足时自动清理本站数据；是否授予由浏览器决定，通常不会弹出提示。主动清理站点数据仍会删除缓存。')}</p>
       </div>
       <p class="asset-cache__note">${t('缓存属于当前浏览器和网站地址。清理站点数据会删除缓存；新版本只需补齐变化文件。完整校验会读取本地文件，不重新下载全部素材。')}</p>
-      <p class="asset-cache__note">${t('在线补齐共享服务器限速，进入对局后自动暂停。关闭此窗口可继续当前任务；关闭页面后已完成文件保留。')}</p>
+      ${ONLINE_DOWNLOAD_DISABLED ? null : html`<p class="asset-cache__note">${t('在线补齐共享服务器限速，进入对局后自动暂停。关闭此窗口可继续当前任务；关闭页面后已完成文件保留。')}</p>`}
     </div>
   <//>`;
 }

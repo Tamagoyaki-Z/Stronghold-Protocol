@@ -16,7 +16,7 @@ const log = { warn() {}, error() {}, debug() {} };
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(run, { limits, trustProxy = false, sizes = [32_000, 32_000], failFirstBuild = false,
-  catalogProperties = {}, updateNow } = {}) {
+  catalogProperties = {}, updateNow, onlineDownload = true } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sp-cache-http-'));
   const publicDir = path.join(root, 'public');
   await fs.mkdir(path.join(publicDir, 'assets'), { recursive: true });
@@ -26,7 +26,7 @@ async function fixture(run, { limits, trustProxy = false, sizes = [32_000, 32_00
   const catalog = { schema: 1, version: sha256(JSON.stringify({ schema: 1, files })), app: 'test', files,
     totalFiles: files.length, totalBytes: sizes.reduce((sum, value) => sum + value, 0), complete: true, missing: [], ...catalogProperties };
   let builds = 0;
-  const assetCache = createAssetCacheHandler({ publicDir, dataDir: root, log, limits, trustProxy, updateNow,
+  const assetCache = createAssetCacheHandler({ publicDir, dataDir: root, log, limits, trustProxy, updateNow, onlineDownload,
     buildCatalog: async () => { builds++; if (failFirstBuild && builds === 1) throw new Error('test setup not ready'); return catalog; } });
   const server = http.createServer(createRequestHandler({ assetCache, log,
     serveStatic: async (req, res) => { res.writeHead(200, { 'Content-Length': 4 }); res.end('game'); } }));
@@ -145,6 +145,22 @@ test('an explicit cold directory request streams the current catalog through the
     const head = await request(server, '/api/asset-cache/catalog', { method: 'HEAD' });
     assert.equal(head.status, 405); assert.equal(head.body.length, 0); assert.equal(head.headers.allow, 'GET');
   });
+});
+
+test('the owner-disabled online download refuses both directory endpoints before any catalogue work', async () => {
+  await fixture(async ({ server, catalog, files, builds, assetCache }) => {
+    const cold = await request(server, '/api/asset-cache/catalog', { headers: { 'Accept-Encoding': 'gzip' } });
+    assert.equal(cold.status, 503); assert.equal(errorOf(cold), 'ASSET_CACHE_ONLINE_DISABLED');
+    assert.ok(cold.body.length < 128, 'the refusal is a small explicit error, not a directory');
+    const update = await request(server, updateURL(catalog), { headers: manualHeaders });
+    assert.equal(update.status, 503); assert.equal(errorOf(update), 'ASSET_CACHE_ONLINE_DISABLED');
+    assert.equal(builds(), 0, 'a refused request never hashes or builds the full directory');
+    assert.equal(assetCache.policy().activeDownloads, 0, 'a refused request takes no transfer slot');
+    // The per-file endpoint and ordinary gameplay asset requests are deliberately unaffected.
+    assert.equal((await request(server, downloadURL(files[0]))).status, 200);
+    assert.equal((await request(server, '/assets/test-0.png')).status, 200);
+    assert.equal((await request(server, '/api/asset-cache/status')).status, 200);
+  }, { onlineDownload: false, limits: { totalBps: 1_000_000, clientBps: 500_000 } });
 });
 
 test('catalog updates require an explicit GET with an exact stale-version and positive cache report', async () => {
