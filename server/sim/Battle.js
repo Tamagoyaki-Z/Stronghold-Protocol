@@ -102,7 +102,10 @@ export class Battle {
     const tl = Number(opts.timeLimit);
     this.timeLimit = opts.timeLimit == null || !(tl > 0) ? (bossLike ? Infinity : 60) : tl;
     // startOpCooldown: the operation cooldown of the battle-start deployment (skills.js AUTO_OP_COOLDOWN)
-    this.flags = { layerGainsEnabled: this.kind === 'normal', ...DP_DEFAULTS, startOpCooldown: AUTO_OP_COOLDOWN, ...(opts.flags || {}) };
+    // IN_BATTLE layer gains (support.gainLayers / Battle.addLayers): 联防 (kind 'unite') is the only kind the rules
+    // turn off, so every other kind starts enabled; a builder that must keep them off states it in opts.flags
+    // (bossRounds.js — 领袖战 — and unitePhase.js pass layerGainsEnabled false explicitly).
+    this.flags = { layerGainsEnabled: this.kind !== 'unite', ...DP_DEFAULTS, startOpCooldown: AUTO_OP_COOLDOWN, ...(opts.flags || {}) };
     const soc = Number(this.flags.startOpCooldown);
     this.flags.startOpCooldown = this.flags.startOpCooldown != null && Number.isFinite(soc) && soc >= 0 ? soc : AUTO_OP_COOLDOWN;
     // DP knobs may arrive as undefined/null/strings (e.g. a template without `dp`): never let them poison DP with NaN.
