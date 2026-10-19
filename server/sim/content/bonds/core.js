@@ -18,7 +18,9 @@
 //   阿戈尔 egirShip      members max HP +(base_max_hp + max_hp_per_stack·L) (直接乘算); battle start devour (see devour():
 //                        the marker's gained base ATK is a 最终加算, `atkFinal`, not scaled by its ATK +%);
 //                        5: max_free_respawn_cnt free redeploys, one per member on its first knock-out — the devour's
-//                        knock-outs by board position once every devour is over (egirReviveScan), later ones at once
+//                        knock-outs by board position once every devour is over (egirReviveScan), later ones at once;
+//                        the devour batch and the fight keep their own quota (fixed 2026-10-19: the batch used to eat
+//                        every slot, so no later first knock-out was ever revived)
 //   叙拉古 siracusaShip  every member deployment: ASPD +(base + per·L) for (base_duration + per·L) s; 6: 隐匿 for the same
 //                        time, and while hidden / end_duration s after, every 普通伤害 hit (siracusaRolls) procs (PRD,
 //                        nominal `prob`) base_damage + damage_per_stack·L true damage + fear `fear` s
@@ -488,8 +490,11 @@ function installEgir(battle, pid, bb, members) {
   // 复活名额"; the owner's decision of 2026-10-05). Which knock-outs take them — a community report the owner relayed on
   // 2026-10-07 (DESIGN §25.22.5): 「第一步给所有鱼加盟约的血量，第二步是开始一个个大鱼吃小鱼，第三步是检测左下到右上哪些鱼睡着了
   // 给他复活」. The members the battle-start devour knocks out wait until every player's devour pass on the field is over
-  // (`egirStart`); then those still down are revived by board position (egirReviveScan) while slots last, and the others
-  // stay down, their first knock-out spent. A knock-out later in the fight takes a slot left, at once, in time order.
+  // (`egirStart`); then those still down are revived by board position (egirReviveScan) while the BATCH's own quota lasts
+  // (batchRevives, capped by the same `max`), and the others stay down, their first knock-out spent. A knock-out later in
+  // the fight takes the FIGHT quota's next slot (revives), at once, in time order — the devour no longer spends it
+  // (the owner's decision of 2026-10-19: with one shared count the battle-start batch took all `max`, so a later first
+  // knock-out was never revived — a 30 s run counted 0).
   // Until 0.2.0 the devour's knock-outs took the slots in knock-out order (DESIGN §24.3), so the food knocked out first
   // — often the end of a chain, marked by every 阿戈尔 behind it — took them while a member further left stayed down.
   // Within the window a knock-out is otherwise like any other: 被击倒 triggers fire (克莱门莎, 幽灵鲨 …) and 不屈 rolls
@@ -526,16 +531,23 @@ function installEgir(battle, pid, bb, members) {
   const memberOps = new Set(members.filter(S.isOp));
   const knockedOut = new Set(); // members whose first knock-out of this battle has happened
   const batch = []; // members knocked out by a battle-start devour, revived (or not) once every pass is over
+  // TWO independent quotas (the owner's decision of 2026-10-19, after the battle-start devour spent all `max` slots and no
+  // later first knock-out could ever be revived: a 30 s run counted 0): the devour batch revives its knock-outs by board
+  // position on its own count, the fight revives later first knock-outs on its own; neither spends the other's.
+  // `max` (bonds.json max_free_respawn_cnt) caps each, and a member knocked out inside the devour window still spends
+  // only its own first knock-out.
+  let batchRevives = 0;
   let revives = 0;
-  const revive = (u) => {
-    if (!battle.redeploy(u, { free: true })) return;
-    revives++;
-    S.fxOn(battle, 'revive', u, 'bond:egirShip', 'respawn', { n: revives });
+  const revive = (u, quota) => {
+    if (!battle.redeploy(u, { free: true })) return false;
+    const n = quota === 'batch' ? ++batchRevives : ++revives;
+    S.fxOn(battle, 'revive', u, 'bond:egirShip', 'respawn', { n, quota });
+    return true;
   };
   start.flush.push(() => {
     for (const u of batch.splice(0).filter((x) => !x.alive && !x.removed).sort(egirReviveScan)) {
-      if (revives >= max) break;
-      revive(u);
+      if (batchRevives >= max) break;
+      revive(u, 'batch');
     }
   });
   battle.on('death', (c) => {
@@ -544,7 +556,7 @@ function installEgir(battle, pid, bb, members) {
     knockedOut.add(u);
     if (start.depth > 0) { batch.push(u); return; }
     if (revives >= max || u.alive || u.removed) return;
-    revive(u);
+    revive(u, 'fight');
   }, { priority: 11 });
 }
 

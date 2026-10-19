@@ -470,7 +470,7 @@ test('阿戈尔 5: in the fight the 3 slots go to the first 3 members knocked ou
   assert.ok(!h3.unit('g3_a').alive);
 });
 
-test('阿戈尔 5 + the devour chain (GitHub #33, #105, #140): the eaten members take the 3 slots (by position once the devour is over — here also the knock-out order), uneaten ones keep none — survivors = uneaten + 3 (normal and 联防)', () => {
+test('阿戈尔 5 + the devour chain (GitHub #33, #105, #140): the eaten members take the 3 batch slots (by position once the devour is over — here also the knock-out order), uneaten ones keep none, and the fight keeps its own 3 — survivors at the devour = uneaten + 3 (normal and 联防)', () => {
   // row 10, all facing right: 浊心斯卡蒂 → 幽灵鲨 → 海霓 → 深巡 → 歌蕾蒂娅 → 隐现; 乌尔比安 on row 12 faces an empty tile.
   // PRTS 盟约记录 阿戈尔 备注 "标记按付与顺序触发【吞噬】效果，目标首次被击倒后解除自身被付与但还未触发的【吞噬】效果". Until 0.1.3
   // the slots belonged to the first 3 by position (浊心斯卡蒂, 乌尔比安, 幽灵鲨: two uneaten members held them, so only 幽灵鲨
@@ -499,11 +499,12 @@ test('阿戈尔 5 + the devour chain (GitHub #33, #105, #140): the eaten members
     assert.deepEqual(members.filter((u) => u.alive).map((u) => u.defId), [skadi, ghost, hn, deep, ulpia].map((u) => u.defId),
       `${kind}: survivors = the 2 uneaten + 3`);
     assert.ok(!fodder.alive, `${kind}: the fodder (no member) is down`);
-    // nothing is left for the fight: 浊心斯卡蒂's first knock-out and 幽灵鲨's second stay down
-    for (const u of [skadi, ghost]) {
-      h.b.dealDamage(null, u, { amount: 1e9, type: 'true' });
-      assert.ok(!u.alive, `${kind}: ${u.defId} stays down`);
-    }
+    // the devour batch spent only its own quota (the owner's decision of 2026-10-19): 浊心斯卡蒂's first knock-out in the
+    // fight comes back, while 幽灵鲨 — whose first knock-out was the devour's — stays down on its second
+    h.b.dealDamage(null, skadi, { amount: 1e9, type: 'true' });
+    assert.ok(skadi.alive, `${kind}: 浊心斯卡蒂: the fight's own first slot`);
+    h.b.dealDamage(null, ghost, { amount: 1e9, type: 'true' });
+    assert.ok(!ghost.alive, `${kind}: 幽灵鲨's second knock-out stays down`);
     checkInvariants(h.b);
   }
 });
@@ -525,12 +526,16 @@ test('阿戈尔 5: a member devoured by several 阿戈尔 spends one slot at mos
   assert.deepEqual(tagged(h, 'bond:egir:devour').map((e) => [e.source.defId, e.target.defId]), [['A_a', 'B_a'], ['A_a', 'X_a']]);
   for (const u of [b, x]) assert.ok(u.alive && kos(u) === 1 && revived(u) === 1, `${u.defId}: one knock-out, one slot`);
   close(x.hp, x.s.maxHp, 1e-6, 'X at full HP: no second mark');
-  // two slots used: D's first knock-out takes the third, C's stays down
+  // the batch spent none of the fight's quota (2026-10-19): D, C and A all come back on their first knock-out, and B's
+  // second knock-out (its first was the devour's) is final
   h.b.dealDamage(null, d, { amount: 1e9, type: 'true' });
-  assert.ok(d.alive, 'D: the third slot');
+  assert.ok(d.alive, "D: the fight's first slot");
   h.b.dealDamage(null, c, { amount: 1e9, type: 'true' });
-  assert.ok(!c.alive, 'C: none left');
-  assert.ok(a.alive && kos(a) === 0, 'A never knocked out');
+  assert.ok(c.alive, "C: the fight's second slot");
+  h.b.dealDamage(null, a, { amount: 1e9, type: 'true' });
+  assert.ok(a.alive && kos(a) === 1, "A: the fight's third slot");
+  h.b.dealDamage(null, b, { amount: 1e9, type: 'true' });
+  assert.ok(!b.alive, 'B: its second knock-out is final');
   checkInvariants(h.b);
   // X with more HP survives A's and B's marks and falls to C's: still one knock-out, one slot
   const tough = defsOf(list.map(([id, bd]) => [id, bd, { stats: { maxHp: id === 'X_a' ? 8000 : 3000 } }]));
@@ -778,14 +783,16 @@ test('阿戈尔 5 (community report, 2026-10-07) step 3: the battle-start devour
     assert.ok(by(13).alive && !kos.includes(13), `${kind}: B3, marked but standing, takes no slot`);
     assert.equal(h.eventsOf('fx').filter((x) => x[1] === 'revive' && x[4]?.src === 'bond:egirShip').length, 3, `${kind}: the 3 slots`);
     if (kind === 'unite') assert.ok(!by(14).alive && by(14).removeReason === FORCED_EXIT, '联防: B4 entered down — its mark resolved, it stays forced out');
-    // the slots are gone: B1's first knock-out in the fight stays down, F4 stays down
+    // the batch spent only its own quota (2026-10-19): B1's first knock-out in the fight comes back; F4, down since the
+    // batch (its first knock-out spent there), stays down
     h.b.dealDamage(null, by(11), { amount: 1e9, type: 'true' });
-    assert.ok(!by(11).alive && !by(4).alive, `${kind}: no slot left`);
+    assert.ok(by(11).alive, `${kind}: B1: the fight quota's first slot`);
+    assert.ok(!by(4).alive, `${kind}: F4 stays down`);
     checkInvariants(h.b);
   }
 });
 
-test('阿戈尔 5 (community report, 2026-10-07): the slots the devour leaves go to later knock-outs in time order; an uneaten member takes one only by being knocked out; a member 不屈 redeploys during the devour is awake at the scan and takes none [ASSUMED]', () => {
+test('阿戈尔 5 (community report, 2026-10-07): the fight own slots (the devour batch no longer spends them, 2026-10-19) go to later knock-outs in time order; an uneaten member takes one only by being knocked out; a member 不屈 redeploys during the devour is awake at the scan and takes none [ASSUMED]', () => {
   const { defs } = egirFood();
   // only F1 and F2 are eaten: B1 → F1, B2 → F2; B3 (10,3), B4 (9,4), B5 (9,6) face empty tiles
   const units = [
@@ -804,8 +811,10 @@ test('阿戈尔 5 (community report, 2026-10-07): the slots the devour leaves go
   const a = run();
   assert.deepEqual(a.h.hooksOf('deploy').filter((c) => !c.initial).map((c) => c.unit.uid), [2, 1], 'F2 (11,4) before F1 (12,4): bottom first');
   assert.deepEqual(a.egirRevives(), [1, 2]);
-  // the third slot: the first member knocked out in the fight — B5, never eaten; then none (B3), and F1's second knock-out
-  assert.deepEqual([15, 13, 1].map(a.kill), [true, false, false], 'B5 takes the last slot; B3 and F1 (a second knock-out) stay down');
+  // the fight has its own 3 slots — the 2 batch revives spent none of them: B5, B3 and B4 come back in time order, while
+  // F1's second knock-out (its first was the devour's) stays down
+  assert.deepEqual([15, 13, 14, 1].map(a.kill), [true, true, true, false], 'B5, B3, B4: the fight slots; F1 (a second knock-out) stays down');
+  assert.deepEqual(a.egirRevives(), [1, 2, 1, 2, 3], 'the batch counted its own 1–2, the fight its own 1–3');
   checkInvariants(a.h.b);
   // 不屈 at p = 1 (0.18 + 0.004 × 300): it rolls on each devour knock-out (a 被击倒 like any other) and redeploys F1 and F2 at
   // once; awake at the scan, they take no slot — all 3 are left for the fight, where 阿戈尔 (death priority 11) comes first.
@@ -817,6 +826,35 @@ test('阿戈尔 5 (community report, 2026-10-07): the slots the devour leaves go
   assert.deepEqual([15, 13, 14].map(b.kill), [true, true, true]);
   assert.deepEqual(b.egirRevives(), [1, 2, 3], 'the 3 slots, in the fight');
   checkInvariants(b.h.b);
+});
+
+// 2026-10-19 (user report): the battle-start devour batch spent all `max` free redeploys, so a member's first knock-out later
+// in the fight was never revived (a 30 s run counted 0). The batch and the fight count their own quota now.
+
+test('阿戈尔 5 (2026-10-19): the devour batch does not spend the fight free revives — a first knock-out after the devour is revived (before the fix: 0)', () => {
+  // five different 阿戈尔: 浊心斯卡蒂 (10,2) devours 幽灵鲨 → 海霓 → 深巡 through the chain; 歌蕾蒂娅 stands at (12,3) on an
+  // empty tile, so it is the one member the devour never touches
+  const ids = ['chess_char_6_04_a', 'chess_char_2_07_a', 'chess_char_3_09_a', 'chess_char_1_04_a', 'chess_char_4_12_a'];
+  const h = makeBattle({
+    units: [...ids.slice(0, 4).map((chessId, i) => ({ chessId, row: 10, col: 2 + i })), { chessId: ids[4], row: 12, col: 3 }],
+    bonds: { egirShip: bondOn(5, 0, null, [3, 5]) }, hooks: ['death', 'deploy'], captureNoisy: true, autoFinish: false, timeLimit: 30,
+  });
+  h.step(1);
+  const [lead, ghost2, hn, deep, glady] = ids.map((id) => h.unit(id));
+  const revives = (quota) => h.eventsOf('fx').filter((x) => x[1] === 'revive' && x[4]?.quota === quota).length;
+  // step 2–3: the devour knocks the 3 food members out and the scan revives them by position — all on the BATCH's quota
+  assert.deepEqual([ghost2, hn, deep].map((u) => u.alive), [true, true, true], 'the devour batch brings its 3 back');
+  assert.equal(revives('batch'), 3, 'the batch used its own 3');
+  assert.equal(revives('fight'), 0, 'the fight quota is untouched');
+  // the fight: a member's first knock-out comes back — before the fix the batch had spent the only counter, so this was 0
+  h.b.dealDamage(null, glady, { amount: 1e9, type: 'true' });
+  assert.ok(glady.alive, 'a first knock-out after the devour is revived (>= 1)');
+  h.b.dealDamage(null, lead, { amount: 1e9, type: 'true' });
+  assert.ok(lead.alive, 'the fight keeps counting its own slots');
+  assert.equal(revives('fight'), 2, 'two fight revives after the batch of 3');
+  h.b.dealDamage(null, glady, { amount: 1e9, type: 'true' });
+  assert.ok(!glady.alive, 'a second knock-out is final');
+  checkInvariants(h.b);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
