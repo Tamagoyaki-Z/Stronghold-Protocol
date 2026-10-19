@@ -40,6 +40,8 @@ export class MatchClientCombat {
     const spec = buildBattleSpec({ ...opts, battleId, fieldId, kind, content: this.battleContent, boss, cs: this.cs, vs: this.vs });
     let total = 0;
     for (const x of spec.spawns) if (x && x.tag !== 'boss' && x.tag !== 'part' && x.countInTotal !== false) total += Math.max(1, Math.floor(Number(x.count) || 1));
+    // the same one-line field debug as a server-run field (combat.js _logFieldDebug); a client-run field is never a preview
+    try { this._logFieldDebug(opts); } catch { /* debug only */ }
     return {
       cc: true, fieldId, kind, players: players.slice(), battleId, spec, battle: null, live: true, done: false,
       mode: null, authority: null, startAt: this.sched.now(), result: null, resultSource: null, timeline: null, endGt: null,

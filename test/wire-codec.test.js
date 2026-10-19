@@ -186,6 +186,9 @@ function noPublicExtensions(message) {
     const known = new Set(fields.map(nameOf));
     for (const k of Object.keys(v)) assert.ok(k === 't' || known.has(k)
       || (fields === WIRE_RECORDS.card && k === 'soldOut')
+      // the HUD's battle-type mark (server/match/match/views.js fieldKindView): every player's field kind, a post-v1
+      // public field like bossPairs below, so it rides the JSON extension slot of its publicPlayer record
+      || (path === 'm.public.players[]' && k === 'fieldKind')
       || (path === 'm.public' && ['emergencyFrozen', 'emergencyFrozenAt', 'emergencyReason',
         // 0.2.5 draws the boss pairing per match (server/match/Match.js bossPairs) and publishes it here; it is
         // a post-v1 public field, so it rides the JSON extension slot like the emergency flags above.

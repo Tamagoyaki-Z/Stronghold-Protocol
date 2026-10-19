@@ -17,7 +17,7 @@
 // { [playerId]: SimClient options } (tamper / mute / stall …), verify ('off' | 'sample' | 'all'), headlessSliceMs
 // (server-run fields in wall-clock slices even in virtual time).
 // Hooks: h.onSend [(playerId, msg) => void], h.onBroadcast [(msg) => void].
-// Captures: h.sent [[playerId, msg]], h.bc [msg], h.ended (summary), h.logs { error: [], warn: [] }.
+// Captures: h.sent [[playerId, msg]], h.bc [msg], h.ended (summary), h.logs { error: [], warn: [], info: [] }.
 
 import assert from 'node:assert/strict';
 import { Match } from '../../server/match/Match.js';
@@ -43,8 +43,8 @@ export function makeMatch(o = {}) {
     for (let i = 0; i < bots; i++) seats.push({ seat: seats.length, playerId: `ai_${i}`, name: `AI${i}`, isBot: true, connected: true });
   }
   const sched = new VirtualScheduler({ instantCombat: o.instant !== false });
-  const logs = { error: [], warn: [] };
-  const log = { info() {}, debug() {}, warn: (...a) => logs.warn.push(a.map(String).join(' ')), error: (...a) => logs.error.push(a.map(String).join(' ')) };
+  const logs = { error: [], warn: [], info: [] };
+  const log = { info: (...a) => logs.info.push(a.map(String).join(' ')), debug() {}, warn: (...a) => logs.warn.push(a.map(String).join(' ')), error: (...a) => logs.error.push(a.map(String).join(' ')) };
   const h = { sent: [], bc: [], ended: null, endedCount: 0, logs, sched, frames: 0, badFrames: [], onSend: [], onBroadcast: [], clients: null };
   const captureFrames = o.captureFrames !== false;
   const checkFrame = (msg) => {

@@ -16,12 +16,56 @@ export class MatchCombat {
   newBattle(opts, { preview = false } = {}) {
     const full = { data: this.ds, content: this.battleContent, logger: this.log, ...opts,
       ...(preview ? { logger: {}, quiet: true } : {}) };
+    let battle = null;
     try {
-      return new this.BattleClass(full);
+      battle = new this.BattleClass(full);
     } catch (e) {
       if (!preview) this.reportError(`battle ${opts.fieldId} construct`, e);
       return new DeadBattle(full, 'forced');
     }
+    // a real field (never a preview / the unit-stat scout): one structured line, see _logFieldDebug. A debug line must
+    // never change a battle (a test double without flags, a broken logger): it is its own failure domain
+    if (!preview && !opts.preview && !opts.quiet && opts.recordEvents !== false) {
+      try { this._logFieldDebug(opts, battle); } catch { /* debug only */ }
+    }
+    return battle;
+  }
+
+  /**
+   * One structured line per field — the B plan of the 2026-10-19 盟约 report (「界面上没有「联防」字样，但盟约层数不涨」): the
+   * line names the field's kind, so the 联防 (`unite`, the only kind whose Battle.flags.layerGainsEnabled is off by default
+   * and the only one that may not 叠层) of the round it happened in can be read off the console afterwards:
+   *   [field-debug] round=<n> field=<id> kind=<kind> layerGains="true|false" players=[<p1>,<p2>] bonds=<bond:layers,...>
+   * One line per field, never the whole state. WARN marks the lines worth reading: a field that is not `normal`, or one
+   * whose players carry bond layers (the 盟约 in question). Called by newBattle (server-run) and _ccField (client-run).
+   */
+  _logFieldDebug(opts, battle = null) {
+    const players = Array.isArray(opts.players) ? opts.players : [];
+    const bonds = [];
+    for (const p of players) {
+      const carried = p && p.bonds && typeof p.bonds === 'object' ? p.bonds : null;
+      if (!carried) continue;
+      for (const [bondId, bond] of Object.entries(carried)) {
+        const layers = Number(bond && bond.layers);
+        if (Number.isFinite(layers) && layers > 0) bonds.push(`${bondId}:${layers}`);
+      }
+    }
+    const kind = battle ? battle.kind : opts.kind ?? 'normal';
+    const round = battle ? battle.round : opts.round ?? '?';
+    // Battle's own default is `kind !== 'unite'` (Battle.js); a builder that states flags.layerGainsEnabled wins
+    const flag = battle && battle.flags ? battle.flags.layerGainsEnabled
+      : opts.flags && opts.flags.layerGainsEnabled != null ? opts.flags.layerGainsEnabled : kind !== 'unite';
+    const line = `[field-debug] round=${round} field=${opts.fieldId ?? '?'} kind=${kind} layerGains="${flag}"`
+      + ` players=[${players.map((p) => (p && p.playerId != null ? p.playerId : '?')).join(',')}]`
+      + ` bonds=${bonds.length ? bonds.join(',') : '-'}`;
+    // a field worth reading stands out: a WARN prefix and the warn sink (a 联防 / 领袖战 / 隐秘核心 field, or one whose
+    // players carry bond layers, i.e. the 盟约 the report is about); a plain normal field is a routine info line
+    const loud = kind !== 'normal' || bonds.length > 0;
+    const text = loud ? `WARN ${line}` : line;
+    try {
+      if (loud) this.log.warn?.(text);
+      else this.log.info?.(text);
+    } catch { /* a logger failure never breaks a battle */ }
   }
 
   /**

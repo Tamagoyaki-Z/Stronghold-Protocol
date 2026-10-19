@@ -60,6 +60,16 @@ export class MatchViews {
     return f ? f.fieldId : null;
   }
 
+  /**
+   * `{ fieldKind }` of the field a player fights on, spread into its public player entry (empty while none is up). The
+   * HUD draws its small battle-type mark from it (联防 / 领袖战场 / 隐秘核心, none for `normal`) in every phase, so a player
+   * can tell which kind of field they are on without waiting for the UNITE phase label.
+   */
+  fieldKindView(ps) {
+    const f = this.fields.find((x) => Array.isArray(x.players) && x.players.includes(ps.playerId));
+    return f && f.kind ? { fieldKind: f.kind } : {};
+  }
+
   publicView() {
     const v = {
       t: 'm.public',
@@ -114,6 +124,8 @@ export class MatchViews {
         // (the mode-off bonds with members included, `off: true`, as in m.private — bondsMeta.offBondCounts)
         bonds: ps.alive ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
         fieldId: this.fieldOf(ps),
+        // the battle type of that field (normal / unite / boss / hidden): the HUD's battle-type mark (fieldKindView)
+        ...this.fieldKindView(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
         ...(Object.keys(ps.skins).length ? { skins: ps.skins } : {}),

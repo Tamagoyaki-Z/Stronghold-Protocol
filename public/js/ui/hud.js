@@ -78,11 +78,44 @@ export function SpectatorPill({ spectators, myId, isHost, onRemove }) {
 }
 
 /**
- * Phase capsule: prep label, kills n/m (combat/unite), kills + boss HP bar (boss rounds).
- * @param {{ pub:any, hud:any }} props
+ * The battle type of the field the viewer fights on — m.public players[].fieldKind (a post-v1 public field: it rides the
+ * wire's JSON extension slot, like bossPairs), falling back to the player's fieldId in m.public.fields (the schema's own
+ * `field.kind`, so a client newer than its server still reads it). null while no field is up.
  */
-export function PhaseCapsule({ pub, hud, miss = null }) {
+export function ownFieldKind(pub, myId) {
+  const list = Array.isArray(pub?.players) ? pub.players : [];
+  const me = list.find((p) => p && p.playerId === myId);
+  if (me && me.fieldKind) return me.fieldKind;
+  const fields = Array.isArray(pub?.fields) ? pub.fields : [];
+  const own = me && me.fieldId ? fields.find((f) => f && f.fieldId === me.fieldId) : null;
+  return own && own.kind ? own.kind : null;
+}
+
+/**
+ * The small battle-type mark of a field (user report of 2026-10-19: 「界面上没有「联防」字样，但盟约层数不涨」 — a mark that
+ * stays on screen while the field is up answers "am I on a 联防 field"). `normal` shows none.
+ * @param {string|null} kind
+ * @returns {string|null}
+ */
+export function fieldKindTag(kind) {
+  if (kind === 'unite') return t('联防');
+  if (kind === 'boss') return t('领袖战场');
+  if (kind === 'hidden') return t('隐秘核心');
+  return null;
+}
+
+/**
+ * Phase capsule: prep label, kills n/m (combat/unite), kills + boss HP bar (boss rounds) and the battle-type mark
+ * (fieldKindTag: 联防 / 领袖战场 / 隐秘核心, none on a `normal` field).
+ * @param {{ pub:any, hud:any, myId?:any, miss?:number|null }} props
+ */
+export function PhaseCapsule({ pub, hud, myId = null, miss = null }) {
   const phase = pub?.phase;
+  // only while a field is live: the own field's kind (联防 / 领袖战场 / 隐秘核心), else the old phase label — a leaker with
+  // no field of its own still reads 联防 during the UNITE phase; a normal field shows no mark at all
+  const liveKind = phase === PHASE.COMBAT || phase === PHASE.UNITE || isBossPhase(phase);
+  const kindTag = liveKind ? fieldKindTag(ownFieldKind(pub, myId)) || (phase === PHASE.UNITE ? t('联防') : null) : null;
+  const kindMark = kindTag ? html`<span class="capsule__tag capsule__tag--kind" data-testid="field-kind">${kindTag}</span>` : null;
   if (isBossPhase(phase)) {
     // the battle on screen first: its snapshot carries the live pool (the local simulation's own damage on top of the
     // server's b.pool, or the server's 20 Hz stream); m.public.bossHp refreshes at ~1 Hz and lags the leader's death
@@ -91,6 +124,7 @@ export function PhaseCapsule({ pub, hud, miss = null }) {
     return html`<div class="capsule capsule--boss" role="status">
       <${Sprite} k="hudPanel/icon_boss" class="capsule__icon" fallback=${html`<${GIcon} name="skull" class="capsule__icon" />`} />
       ${hud?.total != null ? html`<span class="capsule__kills num"><b>${hud.resolved ?? hud.killed ?? 0}</b>/${hud.total}</span>` : null}
+      ${kindMark}
       <div class="bossbar" title=${boss ? `${fmtNum(boss.hp)} / ${fmtNum(boss.max)}` : t('敌方领袖')}>
         <div class="bossbar__fill" style=${`width:${frac == null ? 100 : frac * 100}%`}></div>
         <span class="bossbar__txt num">${frac == null ? t('敌方领袖') : bossPctText(frac)}</span>
@@ -102,7 +136,7 @@ export function PhaseCapsule({ pub, hud, miss = null }) {
       <${Sprite} k=${phase === PHASE.UNITE ? 'hudPanel/icon_coop' : 'hudPanel/icon_battle'} class="capsule__icon"
         fallback=${html`<${Icon} name="sword" class="capsule__icon" />`} />
       <span class="capsule__kills num"><b>${hud?.resolved ?? hud?.killed ?? 0}</b>/${hud?.total ?? '--'}</span>
-      ${phase === PHASE.UNITE ? html`<span class="capsule__tag">${t('联防')}</span>` : null}
+      ${kindMark}
       ${phase === PHASE.UNITE && Number.isInteger(pub?.unite?.round) && pub.unite.roundsMax > 1
         ? html`<span class="capsule__wave num" data-testid="unite-wave"
           title=${t('第 {wave} 轮联防 · 最多 {max} 轮', { wave: pub.unite.round, max: pub.unite.roundsMax })}>
@@ -413,7 +447,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         <span class="roundbox__label">${t('回合')}</span>
         <b class="roundbox__num num">${roundText}</b>
       </div>
-      <${PhaseCapsule} pub=${pub} hud=${hud} miss=${!boss && Number.isFinite(live?.left) ? live.left : null} />
+      <${PhaseCapsule} pub=${pub} hud=${hud} myId=${myId} miss=${!boss && Number.isFinite(live?.left) ? live.left : null} />
       <${LpTower} value=${lp} size="lg" tone=${lowLp ? 'danger' : boss ? 'team' : null} pending=${pending}
         note=${pending > 0 && live?.unite ? t('联防中') : null} tip=${pendingTip(lp, pending, { unite: !!live?.unite, cap, left: live?.left ?? null })} />
       <${Tooltip} text=${btn.right.tip} placement="bottom">
