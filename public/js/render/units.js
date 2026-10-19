@@ -220,6 +220,9 @@ export const SLIDE_FRICTION = 1;
  * `CharacterAnimator.OnFinish`, when the finish state ends — docs/research/14-death-animations.md).
  */
 const DIE_FADE_TAIL = 0.55;
+/** One cast = one clip set: a second ability's cast inside this window does not cut the running one (the hold
+ *  render/vfx/skillfx.js ENEMY_HOLD_S already keeps for that enemy's official skill effects). */
+const SKILL_SLOT_HOLD_S = 2;
 /**
  * Longest Die clip a death plays out (s): the longest enemy Die clip of data/assets.json is 盐风主教昆图斯's 7.97 s (234
  * enemy Die clips; the old 1.6 s cap cut 25 of them short — the bosses' most), and the official client plays its clip
@@ -1368,10 +1371,41 @@ export class UnitView {
    * clip (`anims.skills`, a multi-skill boss's Skill_01..04), which the SKILL flag right after plays. The same slot again
    * or a non-slot changes nothing.
    */
+  /**
+   * A sim `cast` slot is the index in the enemy's data record `skills[]` (server/sim/content/enemies/helpers.js
+   * castSlot). A multi-stage boss lists EVERY stage's variants there (昆图斯: Tidewater / Rockfall / SummonTentac ×3
+   * stages, + Doom) while its model ships one clip set per stage (`anims.skills` 0..3), so a stage-2 slot (6..8) found
+   * no clip and fell back to the manifest's primary one: every ability of that stage played Skill_01 (大潮, 3.0 s)
+   * whatever it was, and the next ability cut that wind-up. The variant-stripped position is the slot's own clip.
+   */
+  _clipSlotOf(index) {
+    const def = this.isEnemy && this.ctx && this.ctx.lookupDef ? this.ctx.lookupDef(this.info) : null;
+    const list = def && Array.isArray(def.skills) ? def.skills : null;
+    const tail = (k) => (typeof k === 'string' ? k.replace(/G\d+$/, '') : null);
+    const base = list && list[index] ? tail(list[index].prefabKey) : null;
+    if (!base) return index;
+    // the clip set follows the abilities' first-appearance order (Tidewater 0, Rockfall 1, SummonTentac 2, Doom 3)
+    const bases = [];
+    for (const s of list) { const b = tail(s && s.prefabKey); if (b && !bases.includes(b)) bases.push(b); }
+    const at = bases.indexOf(base);
+    return at >= 0 ? at : index;
+  }
+
+  /**
+   * The skill slot an enemy casts (the sim's `cast` event; PR #275 by @xcdoge): its clip set swaps to that slot's skill
+   * clip (`anims.skills`, a multi-skill boss's Skill_01..04), which the SKILL flag right after plays. The same slot again
+   * or a non-slot changes nothing; another slot's cast inside SKILL_SLOT_HOLD_S does not cut the running one.
+   */
   setSkillSlot(index) {
-    if (!Number.isInteger(index) || index < 0 || index === this.skillIndex) return;
-    this.skillIndex = index;
-    if (this.actor) this.actor.setSkillIndex(index);
+    if (!Number.isInteger(index) || index < 0) return;
+    const slot = this._clipSlotOf(index);
+    if (slot === this.skillIndex) return;
+    // the actor's own clock (game seconds): a rebuilt model starts a new clock, which never counts as the hold
+    const t = this.actor ? this.actor.clock : null;
+    if (t != null && this._slotAt != null && t >= this._slotAt && t - this._slotAt < SKILL_SLOT_HOLD_S) return;
+    if (t != null) this._slotAt = t;
+    this.skillIndex = slot;
+    if (this.actor) this.actor.setSkillIndex(slot);
   }
 
   onDeploy() {
