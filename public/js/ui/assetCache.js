@@ -6,7 +6,7 @@ import { assetCache } from '../assetCache.js';
 import { assets } from '../assets.js';
 import { store, selectRoute } from '../store.js';
 import { t } from '../../../shared/i18n.js';
-import { ONLINE_DOWNLOAD_DISABLED } from '../../../shared/assetCache.js';
+import { ONLINE_DOWNLOAD_DISABLED, ONLINE_CATALOG_DISABLED } from '../../../shared/assetCache.js';
 
 const viewers = new Set();
 let opened = false;
@@ -165,13 +165,13 @@ export function AssetCacheHost() {
           : t('尚未校验')}</span>
         ${canUpdateCatalog ? html`<div class="asset-cache__catalog-update">
           <${Button} variant="secondary" size="sm" icon="download"
-              disabled=${disabled || ONLINE_DOWNLOAD_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
+              disabled=${disabled || ONLINE_CATALOG_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
               onClick=${() => run(() => assetCache.updateCatalog())} data-testid="asset-cache-catalog-update">${t('手动更新目录（限速）')}<//>
           ${retrySeconds > 0 ? html`<span role="status">${t('请等待 {n} 秒后再试', { n: retrySeconds })}</span>` : null}
         </div>` : null}
         ${canDownloadCatalog ? html`<div class="asset-cache__catalog-update">
           <${Button} variant="secondary" size="sm" icon="download"
-              disabled=${disabled || ONLINE_DOWNLOAD_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
+              disabled=${disabled || ONLINE_CATALOG_DISABLED || state.emergency || state.policy?.enabled === false || retrySeconds > 0}
               onClick=${() => run(() => assetCache.downloadCatalog())} data-testid="asset-cache-catalog-download">${t('在线获取完整目录（限速）')}<//>
           ${retrySeconds > 0 ? html`<span role="status">${t('请等待 {n} 秒后再试', { n: retrySeconds })}</span>` : null}
         </div>` : null}

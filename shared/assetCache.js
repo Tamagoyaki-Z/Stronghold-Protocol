@@ -14,6 +14,8 @@ export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
 // them are closed. Per-file on-demand loading is deliberately untouched: the service worker's /assets/* fetch and
 // GET /api/asset-cache/file keep working exactly as before.
 export const ONLINE_DOWNLOAD_DISABLED = true;
+export const ONLINE_CATALOG_DISABLED = false; // 在线获取目录（8MB 清单）常开：新玩家导入素材包必须先取目录；整包下载仍关闭
+export const ONLINE_CATALOG_BUTTON_ALWAYS = true; // 面板里「在线获取目录」按钮常驻可见
 const SHA = /^[a-f0-9]{64}$/;
 // `bin` = the 0.2.5 battlefield scene meshes (public/assets/local/scene/*/scene.bin, kind SceneData):
 // browser-side validation must accept exactly what server/assetCacheCatalog.js packs, or the catalog is

@@ -10,7 +10,7 @@ import { createAssetCacheCatalog, checkedAssetPath } from '../assetCacheCatalog.
 import { clientAddress } from '../net.js';
 import { parseTrustProxy } from './config.js';
 import { MIME } from './files.js';
-import { assetCacheSummary, MAX_MANIFEST_BYTES, ONLINE_DOWNLOAD_DISABLED } from '../../shared/assetCache.js';
+import { assetCacheSummary, MAX_MANIFEST_BYTES, ONLINE_DOWNLOAD_DISABLED, ONLINE_CATALOG_DISABLED } from '../../shared/assetCache.js';
 import { sendJson } from './common.js';
 import { CacheDownloadLimiter } from './cacheLimiter.js';
 
@@ -132,7 +132,7 @@ export function createAssetCacheHandler({ publicDir, dataDir, log, limits, trust
     if (!request || req.headers.range) { failure(req, res, 400, 'ASSET_CACHE_INVALID_REQUEST'); return; }
     if (request.from === request.to) { failure(req, res, 409, 'ASSET_CACHE_CATALOG_ALREADY_CURRENT'); return; }
     // Owner policy: no whole-package directory transfer. The per-file endpoint below is not affected.
-    if (!onlineDownload || !limiter.policy().enabled) { failure(req, res, 503, 'ASSET_CACHE_ONLINE_DISABLED'); return; }
+    if (ONLINE_CATALOG_DISABLED || !limiter.policy().enabled) { failure(req, res, 503, 'ASSET_CACHE_ONLINE_DISABLED'); return; }
     let state;
     try { state = await snapshot(); } catch (error) {
       log?.warn?.('[asset-cache] catalog unavailable', error.message);
@@ -181,7 +181,7 @@ export function createAssetCacheHandler({ publicDir, dataDir, log, limits, trust
       failure(req, res, 400, 'ASSET_CACHE_RANGE_UNSUPPORTED'); return;
     }
     // Owner policy: no whole-package directory transfer. The per-file endpoint below is not affected.
-    if (!onlineDownload || !limiter.policy().enabled) { failure(req, res, 503, 'ASSET_CACHE_ONLINE_DISABLED'); return; }
+    if (ONLINE_CATALOG_DISABLED || !limiter.policy().enabled) { failure(req, res, 503, 'ASSET_CACHE_ONLINE_DISABLED'); return; }
     let state;
     try { state = await snapshot(); } catch (error) {
       log?.warn?.('[asset-cache] catalog unavailable', error.message);
