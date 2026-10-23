@@ -398,6 +398,9 @@ export function applyHpLoss(battle, source, target, amount, dmg, mark) {
     }
     dealt = Math.max(0, before - pool.hp);
     if (!Number.isFinite(dealt)) dealt = 0; // a misbehaving pool (NaN hp) must not poison damage stats
+    if (process.env.SP_CLEMNT_DEBUG) {
+      console.log(`[clemnt-boss] t=${battle.time.toFixed(2)} src=${source?.defId || source?.name || '?'} pid=${pid} amount=${Math.round(amount)} dealt=${Math.round(dealt)} poolHp=${Math.round(pool.hp)}/${Math.round(pool.maxHp)} tags=${JSON.stringify(dmg?.tags || [])}`);
+    }
     if (pid != null) { const pp = battle._pp(pid); if (pp) pp.bossDamage += dealt; }
     battle._syncBossHp(target);
   } else {

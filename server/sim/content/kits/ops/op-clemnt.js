@@ -119,10 +119,17 @@ export default {
       c.tick += dt;
       if (c.tick < 1 - 1e-9) return;
       c.tick -= 1;
+      const _dbgPhys = unit.s.atk * num(b2['attack@physical_atk_scale']);
+      const _dbgElem = num(b2['attack@water_element'], 200);
+      if (typeof process !== 'undefined' && process.env.SP_CLEMNT_DEBUG) {
+        const _t = battle.time.toFixed(2);
+        const _foes = foes.map((e) => `${e.name || e.key}(hp=${Math.round(e.hp)} flags=${JSON.stringify({ cold: !!e.s.flags.cold, freeze: !!e.s.flags.freeze })})`).join(', ');
+        console.log(`[clemnt-dot] t=${_t} atk=${unit.s.atk} atkScaleMul=${unit.s.atkScaleMul} dmgDealtMul=${unit.s.dmgDealtMul} elem=${_dbgElem} phys=${_dbgPhys} foes=[${_foes}]`);
+      }
       for (const e of foes) {
-        battle.dealDamage(unit, e, { amount: num(b2['attack@water_element'], 200), type: 'element',
+        battle.dealDamage(unit, e, { amount: _dbgElem, type: 'element',
           element: 'erosion', isSkill: true, canDodge: false, tags: ['skill', 'dot', 'clemnt:vortex:erosion'] });
-        if (hasHp(e)) battle.dealDamage(unit, e, { amount: unit.s.atk * num(b2['attack@physical_atk_scale']),
+        if (hasHp(e)) battle.dealDamage(unit, e, { amount: _dbgPhys,
           type: 'phys', canDodge: false, isSkill: true, tags: ['skill', 'dot', 'clemnt:vortex'] });
       }
     };
@@ -162,6 +169,9 @@ export default {
               const near = battle.foesInColliderRadius(target.x, target.y, SPLASH_RADIUS)
                 .filter((e) => e !== target && canTargetEnemy(unit, e, GROUND))
                 .slice(0, Math.max(0, num(b2['attack@max_target'], 5) - 1));
+              if (typeof process !== 'undefined' && process.env.SP_CLEMNT_DEBUG && near.length) {
+                console.log(`[clemnt-splash] t=${battle.time.toFixed(2)} atk=${unit.s.atk} atkScaleMul=${unit.s.atkScaleMul} aoe_atk_scale=${num(b2['attack@aoe_atk_scale'], 1)} n=${near.length} per=${unit.s.atk * unit.s.atkScaleMul}`);
+              }
               for (const e of near) battle.dealDamage(unit, e, {
                 amount: unit.s.atk * unit.s.atkScaleMul, type: 'phys',
                 isAttack: true, isSplash: true, isSkill: true, attackId, tags: ['skill', 'clemnt:splash'],
